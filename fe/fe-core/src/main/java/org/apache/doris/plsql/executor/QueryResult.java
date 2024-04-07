@@ -35,6 +35,8 @@ public class QueryResult {
     private ConnectProcessor processor;
     private final Exception exception;
 
+    private int rowCount;
+
     public QueryResult(RowResult rows, Supplier<Metadata> metadata, ConnectProcessor processor, Exception exception) {
         this.rows = rows;
         this.metadata = metadata != null ? memoize(metadata) : null;
@@ -52,6 +54,20 @@ public class QueryResult {
             }
         }
         return rows.next();
+    }
+
+    public void ready() {
+        if (rows != null) {
+            rows.ready();
+        }
+    }
+
+    public boolean isQuery() {
+        return rows != null && rows.isQuery();
+    }
+
+    public long getRowCount() {
+        return rows != null ? rows.getRowCount() : 0;
     }
 
     public int columnCount() {
@@ -78,6 +94,9 @@ public class QueryResult {
         return exception != null;
     }
 
+    public boolean available() {
+        return rows != null && rows.available();
+    }
     public void printStackTrace() {
         if (exception != null) {
             exception.printStackTrace();

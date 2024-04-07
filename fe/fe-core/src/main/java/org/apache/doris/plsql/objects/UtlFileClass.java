@@ -22,6 +22,7 @@ package org.apache.doris.plsql.objects;
 
 import org.apache.doris.plsql.File;
 import org.apache.doris.plsql.Var;
+import org.apache.doris.plsql.Var.VarType;
 import org.apache.doris.plsql.objects.MethodParams.Arity;
 
 public class UtlFileClass implements PlClass {
@@ -45,7 +46,7 @@ public class UtlFileClass implements PlClass {
                 }
             }
             File file = self.fileOpen(dir, name, write, overwrite);
-            return new Var(Var.Type.FILE, file);
+            return new Var(VarType.FILE, file);
         });
         methodDictionary.put("get_line", (self, args) -> {
             MethodParams params = new MethodParams("get_line", args, Arity.UNARY);

@@ -64,6 +64,9 @@ public class Scope {
         vars.put(var.name.toUpperCase(), var);
     }
 
+    void dropVariable(String name) {
+        vars.remove(name.toUpperCase());
+    }
     /**
      * Add a condition handler
      */

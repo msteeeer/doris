@@ -107,11 +107,13 @@ import org.apache.doris.nereids.parser.ParserUtils;
 import org.apache.doris.nereids.parser.plsql.PLSqlLogicalPlanBuilder;
 import org.apache.doris.nereids.trees.expressions.NamedExpression;
 import org.apache.doris.nereids.trees.plans.commands.info.FuncNameInfo;
-import org.apache.doris.plsql.Var.Type;
+import org.apache.doris.plsql.Signal.Type;
+import org.apache.doris.plsql.Var.VarType;
 import org.apache.doris.plsql.exception.PlValidationException;
 import org.apache.doris.plsql.exception.QueryException;
 import org.apache.doris.plsql.exception.TypeException;
-import org.apache.doris.plsql.exception.UndefinedIdentException;
+import org.apache.doris.plsql.exception.UndefinedFunctionException;
+import org.apache.doris.plsql.exception.VariableNotDeclareException;
 import org.apache.doris.plsql.executor.JdbcQueryExecutor;
 import org.apache.doris.plsql.executor.Metadata;
 import org.apache.doris.plsql.executor.QueryExecutor;
@@ -186,6 +188,8 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
     public static final String SQLCODE = "SQLCODE";
     public static final String SQLSTATE = "SQLSTATE";
     public static final String HOSTCODE = "HOSTCODE";
+    public static final String MESSAGE_TEXT = "MESSAGE_TEXT";
+    public static final String ROW_COUNT = "ROW_COUNT";
 
     Exec exec;
     public FunctionRegistry functions;
@@ -210,6 +214,7 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
     Stack<String> callStack = new Stack<>();
 
     Stack<Signal> signals = new Stack<>();
+
     Signal currentSignal;
     Scope currentHandlerScope;
     boolean resignal = false;
@@ -231,11 +236,12 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
     Console console = Console.STANDARD;
     ResultListener resultListener = ResultListener.NONE;
 
-    int rowCount = 0;
+    long rowCount = 0;
 
     StringBuilder localUdf = new StringBuilder();
     boolean initRoutines = false;
     public boolean inCallStmt = false;
+    public boolean evalFuncParams = false;
     boolean udfRegistered = false;
     boolean udfRun = false;
 
@@ -272,31 +278,28 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
      * Set a variable using a value from the parameter or the stack
      */
     public Var setVariable(String name, Var value) {
-        if (value == null || value == Var.Empty) {
+        if (value == null || value == Var.EMPTY) {
             if (exec.stack.empty()) {
-                return Var.Empty;
+                return Var.EMPTY;
             }
             value = exec.stack.pop();
         }
         if (name.startsWith("plsql.")) {
             exec.conf.setOption(name, value.toString());
-            return Var.Empty;
+            return Var.EMPTY;
         }
         Var var = findVariable(name);
         if (var != null) {
             var.cast(value);
         } else {
-            var = new Var(value);
-            var.setName(name);
-            if (exec.currentScope != null) {
-                exec.currentScope.addVariable(var);
-            }
+            exec.signal(Type.SQL_EXCEPTION, "Variable '" + name + "' should be declared before set.",
+                    new VariableNotDeclareException(name));
         }
         return var;
     }
 
     public Var setVariable(String name) {
-        return setVariable(name, Var.Empty);
+        return setVariable(name, Var.EMPTY);
     }
 
     public Var setVariable(String name, String value) {
@@ -307,6 +310,10 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
         return setVariable(name, new Var(Long.valueOf(value)));
     }
 
+    public Var setVariable(String name, long value) {
+        return setVariable(name, new Var(Long.valueOf(value)));
+    }
+    
     /**
      * Set variable to NULL
      */
@@ -332,6 +339,12 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
             currentPackageDecl.addVariable(var);
         } else if (exec.currentScope != null) {
             exec.currentScope.addVariable(var);
+        }
+    }
+
+    public void dropVariable(String name) {
+        if (exec.currentScope != null) {
+            exec.currentScope.dropVariable(name);
         }
     }
 
@@ -405,7 +418,7 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
         if (!exec.stack.isEmpty()) {
             return exec.stack.pop();
         }
-        return Var.Empty;
+        return Var.EMPTY;
     }
 
     /**
@@ -435,6 +448,21 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
         return null;
     }
 
+    @Override
+    public Integer visitPrepare_stmt(PLParser.Prepare_stmtContext ctx) {
+        if (ctx.string()!= null) {
+            exec.addVariable(new Var(ctx.ident_pl(0).getText(), VarType.STRING, Utils.unquoteString(ctx.string().getText())));
+        } else {
+            exec.addVariable(new Var(ctx.ident_pl(0).getText(), VarType.STRING, exec.findVariable(ctx.ident_pl(1).getText()).value));
+        }
+        return 0;
+    }
+
+    @Override
+    public Integer visitDrop_prepare_stmt(PLParser.Drop_prepare_stmtContext ctx) {
+        exec.dropVariable(ctx.ident_pl().getText());
+        return 0;
+    }
     /**
      * Find an existing variable by name
      */
@@ -494,7 +522,7 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
      */
     public Var findCursor(String name) {
         Var cursor = exec.findVariable(name);
-        if (cursor != null && cursor.type == Type.CURSOR) {
+        if (cursor != null && cursor.type == VarType.CURSOR) {
             return cursor;
         }
         return null;
@@ -587,17 +615,17 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
 
     public void signal(Query query) {
         setSqlCode(query.getException());
-        signal(Signal.Type.SQLEXCEPTION, query.errorText(), query.getException());
+        signal(Signal.Type.SQL_EXCEPTION, query.errorText(), query.getException());
     }
 
     public void signal(QueryResult query) {
         setSqlCode(query.exception());
-        signal(Signal.Type.SQLEXCEPTION, query.errorText(), query.exception());
+        signal(Signal.Type.SQL_EXCEPTION, query.errorText(), query.exception());
     }
 
     public void signal(Exception exception) {
         setSqlCode(exception);
-        signal(Signal.Type.SQLEXCEPTION, exception.getMessage(), exception);
+        signal(Signal.Type.SQL_EXCEPTION, exception.getMessage(), exception);
     }
 
     /**
@@ -625,12 +653,11 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
                 if (h.execType != Handler.ExecType.CONTINUE) {
                     continue;
                 }
-                if ((h.type != Signal.Type.USERDEFINED && h.type == exec.currentSignal.type)
-                        || (h.type == Signal.Type.USERDEFINED && h.type == exec.currentSignal.type
+                if ((h.type != Signal.Type.USER_DEFINED && h.type == exec.currentSignal.type)
+                        || (h.type == Signal.Type.USER_DEFINED && h.type == exec.currentSignal.type
                         && h.value.equalsIgnoreCase(exec.currentSignal.value))) {
                     trace(h.ctx, "CONTINUE HANDLER");
                     enterScope(Scope.Type.HANDLER);
-                    exec.currentHandlerScope = h.scope;
                     visit(h.ctx.single_block_stmt());
                     leaveScope();
                     exec.currentSignal = null;
@@ -653,8 +680,8 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
             if (h.execType != Handler.ExecType.EXIT) {
                 continue;
             }
-            if ((h.type != Signal.Type.USERDEFINED && h.type == exec.currentSignal.type)
-                    || (h.type == Signal.Type.USERDEFINED && h.type == exec.currentSignal.type
+            if ((h.type != Signal.Type.USER_DEFINED && h.type == exec.currentSignal.type)
+                    || (h.type == Signal.Type.USER_DEFINED && h.type == exec.currentSignal.type
                     && h.value.equalsIgnoreCase(currentSignal.value))) {
                 trace(h.ctx, "EXIT HANDLER");
                 enterScope(Scope.Type.HANDLER);
@@ -792,7 +819,7 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
             setSqlState(((QueryException) exception).getSQLState());
         } else {
             setSqlCode(SqlCodes.ERROR);
-            setSqlState("02000");
+            setSqlState(SqlState.EXCEPTION.getStateCode());
         }
     }
 
@@ -805,6 +832,7 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
             var.setValue(sqlstate);
         }
     }
+
 
     public void setResultListener(ResultListener resultListener) {
         stmt.setResultListener(resultListener);
@@ -931,12 +959,14 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
         } else {
             functions = new InMemoryFunctionRegistry(this, builtinFunctions);
         }
-        addVariable(new Var(ERRORCODE, Var.Type.BIGINT, 0L));
-        addVariable(new Var(SQLCODE, Var.Type.BIGINT, 0L));
-        addVariable(new Var(SQLSTATE, Var.Type.STRING, "00000"));
-        addVariable(new Var(HOSTCODE, Var.Type.BIGINT, 0L));
+        addVariable(new Var(ERRORCODE, VarType.BIGINT, 0L));
+        addVariable(new Var(SQLCODE, VarType.BIGINT, 0L));
+        addVariable(new Var(SQLSTATE, VarType.STRING, "00000"));
+        addVariable(new Var(HOSTCODE, VarType.BIGINT, 0L));
+        addVariable(new Var(MESSAGE_TEXT, VarType.STRING, ""));
+        addVariable(new Var(ROW_COUNT, VarType.BIGINT, 0L));
         for (Map.Entry<String, String> v : arguments.getVars().entrySet()) {
-            addVariable(new Var(v.getKey(), Var.Type.STRING, v.getValue()));
+            addVariable(new Var(v.getKey(), VarType.STRING, v.getValue()));
         }
         includeRcFile();
         registerBuiltins();
@@ -954,14 +984,14 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
     }
 
     protected void registerBuiltins() {
-        Var dbmVar = new Var(Type.PL_OBJECT, "DBMS_OUTPUT");
+        Var dbmVar = new Var(VarType.PL_OBJECT, "DBMS_OUTPUT");
         DbmOutput dbms = DbmOutputClass.INSTANCE.newInstance();
         dbms.initialize(console);
         dbmVar.setValue(dbms);
         dbmVar.setConstant(true);
         addVariable(dbmVar);
 
-        Var utlFileVar = new Var(Type.PL_OBJECT, "UTL_FILE");
+        Var utlFileVar = new Var(VarType.PL_OBJECT, "UTL_FILE");
         UtlFile utlFile = UtlFileClass.INSTANCE.newInstance();
         utlFileVar.setValue(utlFile);
         utlFileVar.setConstant(true);
@@ -1095,17 +1125,21 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
             Signal sig = signals.pop();
             if (sig.type == Signal.Type.VALIDATION) {
                 error(((PlValidationException) sig.exception).getCtx(), sig.exception.getMessage());
-            } else if (sig.type == Signal.Type.SQLEXCEPTION) {
-                LOG.warn(ExceptionUtils.getStackTrace(sig.exception));
-                console.printError(ErrorCode.ERR_SP_BAD_SQLSTATE,
-                        "Unhandled exception in PL/SQL. " + sig.exception.toString());
+            } else if (sig.type == Signal.Type.SQL_EXCEPTION) {
+                if (sig.exception != null) {
+                    LOG.warn(ExceptionUtils.getStackTrace(sig.exception));
+                    console.printError(ErrorCode.ERR_SP_BAD_SQLSTATE, sig.exception.getMessage());
+                } else {
+                    // TODO: fix SQL_EXCEPTION without exception.
+                    LOG.warn("Signal has no exception information.");
+                }
             } else if (sig.type == Signal.Type.UNSUPPORTED_OPERATION) {
                 console.printError(ErrorCode.ERR_SP_BAD_SQLSTATE,
                         sig.value == null ? "Unsupported operation" : sig.value);
             } else if (sig.type == Signal.Type.TOO_MANY_ROWS) {
                 console.printError(ErrorCode.ERR_SP_BAD_SQLSTATE,
                         sig.value == null ? "Too many rows exception" : sig.value);
-            } else if (sig.type == Signal.Type.NOTFOUND) {
+            } else if (sig.type == Signal.Type.NOT_FOUND) {
                 console.printError(ErrorCode.ERR_SP_FETCH_NO_DATA,
                         sig.value == null ? "Not found data exception" : sig.value);
             } else if (sig.exception != null) {
@@ -1115,7 +1149,7 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
             } else if (sig.value != null) {
                 console.printError(ErrorCode.ERR_SP_BAD_SQLSTATE, sig.value);
             } else {
-                trace(null, "Signal: " + sig.type);
+                LOG.warn("Signal: " + sig.type);
             }
         }
     }
@@ -1158,6 +1192,7 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
         }
         if (!exec.signals.empty() && exec.conf.onError != OnError.SETERROR) {
             if (!runContinueHandler()) {
+                LOG.info("Continue handler skip ---------SQL: " + exec.logicalPlanBuilder.getOriginSql(ctx));
                 return 0;
             }
         }
@@ -1167,6 +1202,7 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
         }
         return visitChildren(ctx);
     }
+
 
     @Override
     public Integer visitDoris_statement(Doris_statementContext ctx) {
@@ -1236,6 +1272,7 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
             }
         } else {
             type = getDataType(ctx);
+            defaultVar = getDefaultVar(Var.defineType(type));
             if (ctx.dtype_len() != null) {
                 len = ctx.dtype_len().INTEGER_VALUE(0).getText();
                 if (ctx.dtype_len().INTEGER_VALUE(1) != null) {
@@ -1247,7 +1284,7 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
             }
             userDefinedType = types.get(type);
             if (userDefinedType != null) {
-                type = Type.PL_OBJECT.name();
+                type = VarType.PL_OBJECT.name();
             }
 
         }
@@ -1280,6 +1317,21 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
         return 0;
     }
 
+    Var getDefaultVar(VarType type) {
+        switch (type) {
+            case STRING:
+                return new Var("");
+            case DECIMAL:
+                return new Var(new BigDecimal(0));
+            case BOOL:
+                return new Var(false);
+            case DOUBLE:
+                return new Var(0.0d);
+            case BIGINT:
+                return new Var(0L);
+        }
+        return null;
+    }
     /**
      * Get the variable data type
      */
@@ -1351,16 +1403,22 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
     public Integer visitDeclare_handler_item(Declare_handler_itemContext ctx) {
         trace(ctx, "DECLARE HANDLER");
         Handler.ExecType execType = Handler.ExecType.EXIT;
-        Signal.Type type = Signal.Type.SQLEXCEPTION;
+        Signal.Type type = Signal.Type.SQL_EXCEPTION;
         String value = null;
         if (ctx.CONTINUE() != null) {
             execType = Handler.ExecType.CONTINUE;
         }
         if (ctx.ident_pl() != null) {
-            type = Signal.Type.USERDEFINED;
+            type = Signal.Type.USER_DEFINED;
             value = ctx.ident_pl().getText();
         } else if (ctx.NOT() != null && ctx.FOUND() != null) {
-            type = Signal.Type.NOTFOUND;
+            type = Signal.Type.NOT_FOUND;
+        } else if (ctx.SQLSTATE() != null) {
+            value = Utils.unquoteString(ctx.STRING_LITERAL().getText());
+            // other case is treated as exception as default.
+            if (value.startsWith("02")) {
+                type = Signal.Type.NOT_FOUND;
+            }
         }
         addHandler(new Handler(execType, type, value, exec.currentScope, ctx));
         return 0;
@@ -1571,8 +1629,8 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
             Assignment_stmt_collection_itemContext ctx) {
         Expr_funcContext lhs = ctx.expr_func();
         Var var = findVariable(lhs.multipartIdentifier().getText());
-        if (var == null || var.type != Type.PL_OBJECT) {
-            stackPush(Var.Null);
+        if (var == null || var.type != VarType.PL_OBJECT) {
+            stackPush(Var.NULL);
             return 0;
         }
         MethodParams.Arity.UNARY.check(lhs.multipartIdentifier().getText(), lhs.expr_func_params().func_param());
@@ -1645,10 +1703,10 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
         if (!executed) {
             if (!exec.functions.exec(procedureName, params)) {
                 Var var = findVariable(procedureName.toString());
-                if (var != null && var.type == Type.PL_OBJECT) {
+                if (var != null && var.type == VarType.PL_OBJECT) {
                     stackPush(dispatch(ctx, (PlObject) var.value, MethodDictionary.__GETITEM__, params));
                 } else {
-                    throw new UndefinedIdentException(ctx, procedureName.toString());
+                    throw new UndefinedFunctionException(ctx, procedureName.toString());
                 }
             }
         }
@@ -1677,7 +1735,7 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
             Var var = findVariable(name);
             if (var == null) {
                 trace(ctx, "Variable not found: " + name);
-            } else if (var.type == Type.PL_OBJECT && var.value instanceof Table) {
+            } else if (var.type == VarType.PL_OBJECT && var.value instanceof Table) {
                 tables.add((Table) var.value);
             } else {
                 throw new TypeException(ctx, Table.class, var.type, var.value);
@@ -1755,7 +1813,10 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
     public Integer visitWhile_stmt(While_stmtContext ctx) {
         return exec.stmt.while_(ctx);
     }
-
+    @Override
+    public Integer visitRepeat_stmt(PLParser.Repeat_stmtContext ctx) {
+        return exec.stmt.repeat(ctx);
+    }
     @Override
     public Integer visitUnconditional_loop_stmt(
             Unconditional_loop_stmtContext ctx) {
@@ -1958,7 +2019,7 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
             setHostCode(rc);
         } catch (Exception e) {
             setHostCode(1);
-            signal(Signal.Type.SQLEXCEPTION);
+            signal(e);
         }
     }
 
@@ -2118,11 +2179,11 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
                 exec.stackPush(var);
             }
         } else {
-            if (exec.inCallStmt) {
-                exec.stackPush(new Var(Var.Type.IDENT, ident));
+            if (exec.evalFuncParams) {
+                exec.stackPush(new Var(ident, VarType.IDENT, null));
             } else {
                 if (!exec.functions.exec(new FuncNameInfo(ident), null)) {
-                    throw new UndefinedIdentException(ctx, ident);
+                    throw new UndefinedFunctionException(ctx, ident);
                 }
             }
         }
@@ -2195,7 +2256,7 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
     @Override
     public Integer visitDate_literal(Date_literalContext ctx) {
         String str = evalPop(ctx.string()).toString();
-        stackPush(new Var(Var.Type.DATE, Utils.toDate(str)));
+        stackPush(new Var(VarType.DATE, Utils.toDate(str)));
         return 0;
     }
 
@@ -2301,7 +2362,7 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
         if (!exec.stack.isEmpty()) {
             return exec.stackPop();
         }
-        return Var.Empty;
+        return Var.EMPTY;
     }
 
     /**
@@ -2340,15 +2401,19 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
     /**
      * Increment the row count
      */
-    public int incRowCount() {
+    public long incRowCount() {
         return exec.rowCount++;
     }
 
     /**
      * Set the row count
      */
-    public void setRowCount(int rowCount) {
-        exec.rowCount = rowCount;
+
+    public void setRowCount(long rowCount) {
+        Var var = findVariable(ROW_COUNT);
+        if (var != null) {
+            var.setValue(rowCount);
+        }
     }
 
     /**
@@ -2369,7 +2434,7 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
      * Trace values retrived from the database
      */
     public void trace(ParserRuleContext ctx, Var var, Metadata meta, int idx) {
-        if (var.type != Var.Type.ROW) {
+        if (var.type != VarType.ROW) {
             trace(ctx, "COLUMN: " + meta.columnName(idx) + ", " + meta.columnTypeName(idx));
             trace(ctx, "SET " + var.getName() + " = " + var.toString());
         } else {
@@ -2412,8 +2477,8 @@ public class Exec extends org.apache.doris.nereids.PLParserBaseVisitor<Integer> 
         return exec.stack;
     }
 
-    public int getRowCount() {
-        return exec.rowCount;
+    public long getRowCount() {
+        return (Long)exec.findVariable(ROW_COUNT).value;
     }
 
     public Conf getConf() {

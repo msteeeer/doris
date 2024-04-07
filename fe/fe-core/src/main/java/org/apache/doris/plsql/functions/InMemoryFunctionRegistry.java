@@ -30,8 +30,10 @@ import org.apache.doris.nereids.trees.plans.commands.info.FuncNameInfo;
 import org.apache.doris.plsql.Exec;
 import org.apache.doris.plsql.Scope;
 import org.apache.doris.plsql.Var;
+import org.apache.doris.plsql.Var.VarType;
 import org.apache.doris.plsql.exception.ArityException;
 import org.apache.doris.plsql.objects.TableClass;
+import org.apache.doris.qe.ConnectContext;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 
@@ -175,10 +177,11 @@ public class InMemoryFunctionRegistry implements FunctionRegistry {
                     scale = p.dtype_len().INTEGER_VALUE(1).getText();
                 }
             }
-            Var var = setCallParameter(name, type, len, scale, actualValues.get(i), exec);
+            boolean isOutPara = (p.OUT() != null || p.INOUT() != null);
+            Var var = setCallParameter(name, type, len, scale, actualValues.get(i), isOutPara, exec);
             exec.trace(actual, "SET PARAM " + name + " = " + var.toString());
             if (out != null && a.expr_atom() != null && a.expr_atom().qident() != null
-                    && (p.OUT() != null || p.INOUT() != null)) {
+                    && isOutPara) {
                 String actualName = a.expr_atom().qident().getText();
                 if (actualName != null) {
                     out.put(actualName, var);
@@ -190,13 +193,19 @@ public class InMemoryFunctionRegistry implements FunctionRegistry {
     /**
      * Create a function or procedure parameter and set its value
      */
-    static Var setCallParameter(String name, String typeName, String len, String scale, Var value, Exec exec) {
+    static Var setCallParameter(String name, String typeName, String len, String scale, Var value, boolean isOutPara, Exec exec) {
         TableClass plClass = exec.getType(typeName); // Prioritize matching table name
-        Var var = new Var(name, plClass == null ? typeName : Var.Type.PL_OBJECT.name(), len, scale, null);
+        Var var = new Var(name, plClass == null ? typeName : VarType.PL_OBJECT.name(), len, scale, null);
         if (plClass != null) {
             var.setValue(plClass.newInstance());
         }
         var.cast(value); // Set var value
+        // call p1('1', @v1), `v1` is outName for the variable.
+        // so we can use select @v1 to get the value.
+        if (isOutPara) {
+            ConnectContext.get().getPlsqlContext().registerGlobalVariable(value.name, var);
+        }
+        // make a copy or create for para
         exec.addVariable(var);
         return var;
     }

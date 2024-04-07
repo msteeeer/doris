@@ -26,6 +26,7 @@ import org.apache.doris.nereids.PLParser.Expr_spec_funcContext;
 import org.apache.doris.plsql.Conn;
 import org.apache.doris.plsql.Exec;
 import org.apache.doris.plsql.Var;
+import org.apache.doris.plsql.Var.VarType;
 import org.apache.doris.plsql.exception.QueryException;
 import org.apache.doris.plsql.executor.QueryExecutor;
 import org.apache.doris.plsql.executor.QueryResult;
@@ -170,7 +171,7 @@ public class FunctionMisc extends BuiltinFunctions {
     void nvl(Expr_func_paramsContext ctx) {
         for (int i = 0; i < ctx.func_param().size(); i++) {
             Var v = evalPop(ctx.func_param(i).expr());
-            if (v.type != Var.Type.NULL) {
+            if (v.type != VarType.NULL) {
                 exec.stackPush(v);
                 return;
             }

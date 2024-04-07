@@ -43,22 +43,26 @@ public class PlsqlQueryExecutor implements QueryExecutor {
         // A cursor may correspond to a query, and if the user opens multiple cursors, need to save multiple
         // query states, so here each query constructs a ConnectProcessor and the ConnectContext shares some data.
         ConnectContext context = ConnectContext.get().cloneContext();
+        QueryResult queryResult;
         try (AutoCloseConnectContext autoCloseCtx = new AutoCloseConnectContext(context)) {
             autoCloseCtx.call();
             context.setRunProcedure(true);
             ConnectProcessor processor = new MysqlConnectProcessor(context);
             processor.executeQuery(MysqlCommand.COM_QUERY, sql);
+            QueryErrorChecker.checkAndThrowException(context, ctx, sql);
             StmtExecutor executor = context.getExecutor();
             if (executor.getParsedStmt().getResultExprs() != null) {
-                return new QueryResult(new DorisRowResult(executor.getCoord(), executor.getColumns(),
-                        executor.getReturnTypes()), () -> metadata(executor), processor, null);
+                queryResult = new QueryResult(new DorisRowResult(executor.getCoord(), executor.getColumns(),
+                        executor.getReturnTypes(), context), () -> metadata(executor), processor, null);
             } else {
-                return new QueryResult(new DorisRowResult(executor.getCoord(), executor.getColumns(), null),
+                queryResult = new QueryResult(new DorisRowResult(executor.getCoord(), executor.getColumns(), null, context),
                         null, processor, null);
             }
         } catch (Exception e) {
-            return new QueryResult(null, () -> new Metadata(Collections.emptyList()), null, e);
+            queryResult = new QueryResult(null, () -> new Metadata(Collections.emptyList()), null, e);
         }
+        queryResult.ready();
+        return queryResult;
     }
 
     private Metadata metadata(StmtExecutor stmtExecutor) {

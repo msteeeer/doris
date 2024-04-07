@@ -40,6 +40,8 @@ import com.google.common.collect.ImmutableList;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.sql.Timestamp;
+import java.util.Date;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
@@ -92,8 +94,12 @@ public abstract class Literal extends Expression implements LeafExpression, Comp
             return BooleanLiteral.of((Boolean) value);
         } else if (value instanceof String) {
             return new StringLiteral((String) value);
+        } else if (value instanceof Timestamp) {
+            return new DateTimeV2Literal(value.toString());
+        } else if (value instanceof Date) {
+            return new DateLiteral(value.toString());
         } else {
-            throw new RuntimeException();
+            throw new RuntimeException("Failed to get literal for type " + value.getClass().getName());
         }
     }
 

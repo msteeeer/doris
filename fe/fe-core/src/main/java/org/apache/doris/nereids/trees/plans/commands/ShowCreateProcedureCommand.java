@@ -19,6 +19,7 @@ package org.apache.doris.nereids.trees.plans.commands;
 
 import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.ScalarType;
+import org.apache.doris.nereids.exceptions.AnalysisException;
 import org.apache.doris.nereids.trees.plans.PlanType;
 import org.apache.doris.nereids.trees.plans.commands.info.FuncNameInfo;
 import org.apache.doris.nereids.trees.plans.visitor.PlanVisitor;
@@ -40,7 +41,7 @@ import java.util.List;
 public class ShowCreateProcedureCommand extends Command implements NoForward {
 
     public static final Logger LOG = LogManager.getLogger(ShowCreateProcedureCommand.class);
-    public static final ImmutableList<String> TITLE_NAMES = new ImmutableList.Builder<String>().add("Procedure")
+    public static final ImmutableList<String> TITLE_NAMES = new ImmutableList.Builder<String>().add("Procedure Name")
                                                                 .add("Create Procedure").build();
     private final FuncNameInfo procedureName;
     /**
@@ -65,10 +66,9 @@ public class ShowCreateProcedureCommand extends Command implements NoForward {
     public void run(ConnectContext ctx, StmtExecutor executor) throws Exception {
         List<List<String>> results = new ArrayList<>();
         ctx.getPlSqlOperation().getExec().functions.showCreateProcedure(this.procedureName, results);
-        if (!results.isEmpty()) {
-            ShowResultSet commonResultSet = new ShowResultSet(getMetaData(), results);
-            executor.sendResultSet(commonResultSet);
-        }
+        ShowResultSet commonResultSet = new ShowResultSet(getMetaData(), results);
+        executor.sendResultSet(commonResultSet);
+
     }
 
     @Override

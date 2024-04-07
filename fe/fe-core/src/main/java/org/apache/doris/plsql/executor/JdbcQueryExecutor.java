@@ -70,14 +70,33 @@ public class JdbcQueryExecutor implements QueryExecutor {
 
     private static class JdbcRowResult implements org.apache.doris.plsql.executor.RowResult {
         private final ResultSet resultSet;
+        private long rowCount;
 
         private JdbcRowResult(ResultSet resultSet) {
             this.resultSet = resultSet;
         }
 
         @Override
+        public void ready() {
+
+        }
+        @Override
+        public boolean isQuery() {
+            return true;
+        }
+
+        public long getRowCount() {
+            return rowCount;
+        }
+
+        @Override
+        public boolean available() {
+            return true;
+        }
+        @Override
         public boolean next() {
             try {
+                rowCount++;
                 return resultSet.next();
             } catch (SQLException e) {
                 throw new QueryException(e);

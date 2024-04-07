@@ -24,14 +24,19 @@ package org.apache.doris.plsql;
  * Signals and exceptions
  */
 public class Signal {
+    public static final Signal NOT_FOUND = new Signal(Type.NOT_FOUND);
     public enum Type {
-        LEAVE_LOOP, LEAVE_ROUTINE, LEAVE_PROGRAM, SQLEXCEPTION, NOTFOUND, TOO_MANY_ROWS, UNSUPPORTED_OPERATION,
-        USERDEFINED, VALIDATION
+        LEAVE_LOOP, LEAVE_ROUTINE, LEAVE_PROGRAM, SQL_EXCEPTION, NOT_FOUND, TOO_MANY_ROWS, UNSUPPORTED_OPERATION,
+        USER_DEFINED, VALIDATION
     }
 
     Type type;
     String value = "";
     Exception exception = null;
+
+    Signal(Type type) {
+        this(type, null, null);
+    }
 
     Signal(Type type, String value) {
         this.type = type;

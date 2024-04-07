@@ -28,6 +28,7 @@ import org.apache.doris.plsql.Console;
 import org.apache.doris.plsql.Exec;
 import org.apache.doris.plsql.Utils;
 import org.apache.doris.plsql.Var;
+import org.apache.doris.plsql.Var.VarType;
 import org.apache.doris.plsql.exception.QueryException;
 import org.apache.doris.plsql.executor.QueryExecutor;
 import org.apache.doris.plsql.executor.QueryResult;
@@ -147,7 +148,7 @@ public class BuiltinFunctions {
         }
         SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd");
         String s = f.format(Calendar.getInstance().getTime());
-        exec.stackPush(new Var(Var.Type.DATE, Utils.toDate(s)));
+        exec.stackPush(new Var(VarType.DATE, Utils.toDate(s)));
     }
 
     /**
@@ -157,7 +158,7 @@ public class BuiltinFunctions {
         if (trace) {
             trace(ctx, "MAX_PART_STRING");
         }
-        execMinMaxPart(ctx, Var.Type.STRING, true /*max*/);
+        execMinMaxPart(ctx, VarType.STRING, true /*max*/);
     }
 
     /**
@@ -167,7 +168,7 @@ public class BuiltinFunctions {
         if (trace) {
             trace(ctx, "MIN_PART_STRING");
         }
-        execMinMaxPart(ctx, Var.Type.STRING, false /*max*/);
+        execMinMaxPart(ctx, VarType.STRING, false /*max*/);
     }
 
     /**
@@ -177,7 +178,7 @@ public class BuiltinFunctions {
         if (trace) {
             trace(ctx, "MAX_PART_INT");
         }
-        execMinMaxPart(ctx, Var.Type.BIGINT, true /*max*/);
+        execMinMaxPart(ctx, VarType.BIGINT, true /*max*/);
     }
 
     /**
@@ -187,7 +188,7 @@ public class BuiltinFunctions {
         if (trace) {
             trace(ctx, "MIN_PART_INT");
         }
-        execMinMaxPart(ctx, Var.Type.BIGINT, false /*max*/);
+        execMinMaxPart(ctx, VarType.BIGINT, false /*max*/);
     }
 
     /**
@@ -197,7 +198,7 @@ public class BuiltinFunctions {
         if (trace) {
             trace(ctx, "MAX_PART_DATE");
         }
-        execMinMaxPart(ctx, Var.Type.DATE, true /*max*/);
+        execMinMaxPart(ctx, VarType.DATE, true /*max*/);
     }
 
     /**
@@ -207,13 +208,13 @@ public class BuiltinFunctions {
         if (trace) {
             trace(ctx, "MIN_PART_DATE");
         }
-        execMinMaxPart(ctx, Var.Type.DATE, false /*max*/);
+        execMinMaxPart(ctx, VarType.DATE, false /*max*/);
     }
 
     /**
      * Execute MIN or MAX partition function
      */
-    public void execMinMaxPart(Expr_spec_funcContext ctx, Var.Type type, boolean max) {
+    public void execMinMaxPart(Expr_spec_funcContext ctx, VarType type, boolean max) {
         String tabname = evalPop(ctx.expr(0)).toString();
         StringBuilder sql = new StringBuilder("SHOW PARTITIONS " + tabname);
         String colname = null;
@@ -274,11 +275,11 @@ public class BuiltinFunctions {
                     }
                 }
                 String[] pair = parts[colnum].split("=");
-                if (type == Var.Type.STRING) {
+                if (type == VarType.STRING) {
                     resultString = Utils.minMaxString(resultString, pair[1], max);
-                } else if (type == Var.Type.BIGINT) {
+                } else if (type == VarType.BIGINT) {
                     resultInt = Utils.minMaxInt(resultInt, pair[1], max);
-                } else if (type == Var.Type.DATE) {
+                } else if (type == VarType.DATE) {
                     resultDate = Utils.minMaxDate(resultDate, pair[1], max);
                 }
             }
@@ -371,7 +372,7 @@ public class BuiltinFunctions {
     }
 
     protected void evalNull() {
-        exec.stackPush(Var.Null);
+        exec.stackPush(Var.NULL);
     }
 
     protected void evalString(String string) {
@@ -388,11 +389,11 @@ public class BuiltinFunctions {
     }
 
     protected void evalDate(Date date) {
-        exec.stackPush(new Var(Var.Type.DATE, date));
+        exec.stackPush(new Var(VarType.DATE, date));
     }
 
     protected void evalNullClose(QueryResult query) {
-        exec.stackPush(Var.Null);
+        exec.stackPush(Var.NULL);
         query.close();
         if (trace) {
             query.printStackTrace();

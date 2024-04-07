@@ -23,6 +23,7 @@ package org.apache.doris.plsql.objects;
 import org.apache.doris.plsql.ColumnDefinition;
 import org.apache.doris.plsql.Row;
 import org.apache.doris.plsql.Var;
+import org.apache.doris.plsql.Var.VarType;
 import org.apache.doris.plsql.objects.MethodParams.Arity;
 
 import java.util.List;
@@ -74,11 +75,11 @@ public class TableClass implements PlClass {
             Long key = new MethodParams(MethodDictionary.__GETITEM__, args, Arity.UNARY).longAt(0);
             Row row = self.at(key);
             if (row == null) {
-                return Var.Null;
+                return Var.NULL;
             }
             if (self.plClass().rowType()) {
                 Var var = new Var();
-                var.setType(Var.Type.ROW.name());
+                var.setType(VarType.ROW.name());
                 var.setValue(row);
                 return var;
             }
@@ -97,12 +98,12 @@ public class TableClass implements PlClass {
                         args.get(1));
                 self.put(key, row);
             }
-            return Var.Null;
+            return Var.NULL;
         });
     }
 
     private static Var wrap(Object result) {
-        return result != null ? new Var((Long) result) : Var.Null;
+        return result != null ? new Var((Long) result) : Var.NULL;
     }
 
     public TableClass(String typeName, List<ColumnDefinition> columns, boolean rowType) {

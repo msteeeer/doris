@@ -635,7 +635,6 @@ BIGDECIMAL_LITERAL
     : DIGIT+ EXPONENT? 'BD'
     | DECIMAL_DIGITS EXPONENT? 'BD' {isValidDecimal()}?
     ;
-
 IDENTIFIER
     : (LETTER | DIGIT | '_')+
     ;
@@ -656,7 +655,6 @@ fragment EXPONENT
 fragment DIGIT
     : [0-9]
     ;
-
 fragment LETTER
     : [a-zA-Z$_] // these are the "java letters" below 0x7F
     | ~[\u0000-\u007F\uD800-\uDBFF] // covers all characters above 0x7F which are not a surrogate

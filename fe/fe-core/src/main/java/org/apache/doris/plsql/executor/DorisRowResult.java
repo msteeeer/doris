@@ -22,6 +22,7 @@ import org.apache.doris.catalog.Type;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.nereids.trees.expressions.literal.Literal;
 import org.apache.doris.plsql.exception.QueryException;
+import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.qe.Coordinator;
 import org.apache.doris.qe.RowBatch;
 import org.apache.doris.statistics.util.InternalQueryBuffer;
@@ -41,21 +42,52 @@ public class DorisRowResult implements RowResult {
     private RowBatch batch;
 
     private int index;
-
     private boolean isLazyLoading;
-
     private boolean eof;
+
+    private long rowCount;
 
     private Object[] current;
 
-    public DorisRowResult(Coordinator coord, List<String> columnNames, List<Type> dorisTypes) {
+    private ByteBuffer curBuffer;
+
+    private ConnectContext context;
+    public DorisRowResult(Coordinator coord, List<String> columnNames, List<Type> dorisTypes, ConnectContext context) {
         this.coord = coord;
         this.columnNames = columnNames;
         this.dorisTypes = dorisTypes;
         this.current = columnNames != null ? new Object[columnNames.size()] : null;
-        this.isLazyLoading = false;
         this.eof = false;
+        this.context = context;
     }
+
+    @Override
+    public boolean available() {
+        return !eof;
+    }
+
+    @Override
+    public boolean isQuery() {
+        return context.getState().isQuery();
+    }
+    @Override
+    public void ready() {
+        try {
+            if (context.getState().isQuery()) {
+                batch = coord.getNext();
+                if (batch.isEos()) {
+                    eof = true;
+                }
+                index = 0;
+            } else {
+                rowCount = context.getReturnRows();
+                eof = true;
+            }
+        } catch (Exception e) {
+            throw new QueryException(e);
+        }
+    }
+
 
     @Override
     public boolean next() {
@@ -63,24 +95,25 @@ public class DorisRowResult implements RowResult {
             return false;
         }
         try {
-            if (batch == null || batch.getBatch() == null
-                    || index == batch.getBatch().getRowsSize() - 1) {
+            curBuffer = batch.getBatch().getRows().get(index++);
+            isLazyLoading = true;
+            rowCount++;
+            if (index == batch.getBatch().getRowsSize()) {
                 batch = coord.getNext();
                 index = 0;
                 if (batch.isEos()) {
                     eof = true;
-                    return false;
                 }
-            } else {
-                ++index;
             }
-            isLazyLoading = true;
         } catch (Exception e) {
             throw new QueryException(e);
         }
         return true;
     }
 
+    public long getRowCount() {
+        return rowCount;
+    }
     @Override
     public void close() {
         // TODO
@@ -89,7 +122,7 @@ public class DorisRowResult implements RowResult {
     @Override
     public <T> T get(int columnIndex, Class<T> type) throws AnalysisException {
         if (isLazyLoading) {
-            readFromDorisType(batch.getBatch().getRows().get(index));
+            readFromDorisType(curBuffer);
             isLazyLoading = false;
         }
         if (current[columnIndex] == null) {
@@ -117,7 +150,7 @@ public class DorisRowResult implements RowResult {
     @Override
     public Literal get(int columnIndex) throws AnalysisException {
         if (isLazyLoading) {
-            readFromDorisType(batch.getBatch().getRows().get(index));
+            readFromDorisType(curBuffer);
             isLazyLoading = false;
         }
         if (current[columnIndex] == null) {
@@ -128,7 +161,7 @@ public class DorisRowResult implements RowResult {
 
     @Override
     public ByteBuffer getMysqlRow() {
-        return batch.getBatch().getRows().get(index);
+        return curBuffer;
     }
 
     private void readFromDorisType(ByteBuffer buffer) throws AnalysisException {

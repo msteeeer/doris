@@ -20,16 +20,16 @@
 
 package org.apache.doris.plsql.exception;
 
-import org.apache.doris.plsql.Var.Type;
+import org.apache.doris.plsql.Var.VarType;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 
 public class TypeException extends PlValidationException {
-    public TypeException(ParserRuleContext ctx, Type expectedType, Type actualType, Object value) {
+    public TypeException(ParserRuleContext ctx, VarType expectedType, VarType actualType, Object value) {
         super(ctx, "cannot convert '" + value + "' with type " + actualType + " to " + expectedType);
     }
 
-    public TypeException(ParserRuleContext ctx, Class<?> expectedType, Type actualType, Object value) {
+    public TypeException(ParserRuleContext ctx, Class<?> expectedType, VarType actualType, Object value) {
         super(ctx, "cannot convert '" + value + "' with type " + actualType + " to " + expectedType);
     }
 

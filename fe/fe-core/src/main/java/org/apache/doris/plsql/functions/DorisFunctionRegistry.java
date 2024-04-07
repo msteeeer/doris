@@ -27,10 +27,13 @@ import org.apache.doris.nereids.PLParser.Create_procedure_stmtContext;
 import org.apache.doris.nereids.PLParser.Expr_func_paramsContext;
 import org.apache.doris.nereids.PLParserBaseVisitor;
 import org.apache.doris.nereids.parser.CaseInsensitiveStream;
+import org.apache.doris.nereids.parser.ParseErrorListener;
+import org.apache.doris.nereids.parser.PostProcessor;
 import org.apache.doris.nereids.trees.plans.commands.info.FuncNameInfo;
 import org.apache.doris.plsql.Exec;
 import org.apache.doris.plsql.Scope;
 import org.apache.doris.plsql.Var;
+import org.apache.doris.plsql.exception.ProcedureAlreadyExistException;
 import org.apache.doris.plsql.metastore.PlsqlMetaClient;
 import org.apache.doris.plsql.metastore.PlsqlProcedureKey;
 import org.apache.doris.plsql.metastore.PlsqlStoredProcedure;
@@ -54,6 +57,9 @@ public class DorisFunctionRegistry implements FunctionRegistry {
     private final PlsqlMetaClient client;
     private final BuiltinFunctions builtinFunctions;
     private final Map<String, ParserRuleContext> cache = new HashMap<>();
+
+    private static final ParseErrorListener PARSE_ERROR_LISTENER = new ParseErrorListener();
+    private static final PostProcessor POST_PROCESSOR = new PostProcessor();
 
     public DorisFunctionRegistry(Exec e, PlsqlMetaClient client, BuiltinFunctions builtinFunctions) {
         this.exec = e;
@@ -151,9 +157,6 @@ public class DorisFunctionRegistry implements FunctionRegistry {
         callWithParameters(ctx, procCtx, out, actualParams);
         exec.callStackPop();
         exec.leaveScope();
-        for (Map.Entry<String, Var> i : out.entrySet()) { // Set OUT parameters
-            exec.setVariable(i.getKey(), i.getValue());
-        }
     }
 
     private void callWithParameters(Expr_func_paramsContext ctx, ParserRuleContext procCtx, HashMap<String, Var> out,
@@ -177,7 +180,11 @@ public class DorisFunctionRegistry implements FunctionRegistry {
     private ParserRuleContext parse(PlsqlStoredProcedure proc) {
         PLLexer lexer = new PLLexer(new CaseInsensitiveStream(CharStreams.fromString(proc.getSource())));
         CommonTokenStream tokens = new CommonTokenStream(lexer);
+        tokens.fill();
         PLParser parser = new PLParser(tokens);
+        parser.addParseListener(POST_PROCESSOR);
+        parser.removeErrorListeners();
+        parser.addErrorListener(PARSE_ERROR_LISTENER);
         ProcedureVisitor visitor = new ProcedureVisitor();
         parser.program().accept(visitor);
         return visitor.func != null ? visitor.func : visitor.proc;
@@ -194,9 +201,11 @@ public class DorisFunctionRegistry implements FunctionRegistry {
         }
         int cnt = actual.func_param().size();
         ArrayList<Var> values = new ArrayList<>(cnt);
+        this.exec.evalFuncParams = true;
         for (int i = 0; i < cnt; i++) {
             values.add(evalPop(actual.func_param(i).expr()));
         }
+        this.exec.evalFuncParams = false;
         return values;
     }
 
@@ -245,7 +254,7 @@ public class DorisFunctionRegistry implements FunctionRegistry {
                     "",
                     ConnectContext.get().getQualifiedUser(), source, createTime, modifyTime, isForce);
         } catch (Exception e) {
-            throw new RuntimeException("failed to save procedure", e);
+            throw new ProcedureAlreadyExistException(procedureName.toString());
         }
     }
 

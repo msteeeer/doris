@@ -54,6 +54,8 @@ import org.apache.doris.nereids.StatementContext;
 import org.apache.doris.nereids.stats.StatsErrorEstimator;
 import org.apache.doris.nereids.trees.expressions.literal.Literal;
 import org.apache.doris.plsql.Exec;
+import org.apache.doris.plsql.PlsqlContext;
+import org.apache.doris.plsql.Var;
 import org.apache.doris.plsql.executor.PlSqlOperation;
 import org.apache.doris.plugin.audit.AuditEvent.AuditEventBuilder;
 import org.apache.doris.resource.Tag;
@@ -234,6 +236,7 @@ public class ConnectContext {
     private boolean skipAuth = false;
     private Exec exec;
     private boolean runProcedure = false;
+    private PlsqlContext plsqlContext = new PlsqlContext();
 
     public void setUserQueryTimeout(int queryTimeout) {
         if (queryTimeout > 0) {
@@ -367,6 +370,7 @@ public class ConnectContext {
         context.setQualifiedUser(qualifiedUser);
         context.setCurrentUserIdentity(currentUserIdentity);
         context.setProcedureExec(exec);
+        context.setPlsqlContext(plsqlContext);
         return context;
     }
 
@@ -1181,6 +1185,13 @@ public class ConnectContext {
 
     public Exec getProcedureExec() {
         return exec;
+    }
+
+    public void setPlsqlContext(PlsqlContext plsqlContext) {
+        this.plsqlContext = plsqlContext;
+    }
+    public PlsqlContext getPlsqlContext() {
+        return plsqlContext;
     }
 
     public int getNetReadTimeout() {

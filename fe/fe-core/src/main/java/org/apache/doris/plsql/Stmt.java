@@ -27,9 +27,11 @@ import org.apache.doris.nereids.PLParser.Associate_locator_stmtContext;
 import org.apache.doris.nereids.PLParser.Break_stmtContext;
 import org.apache.doris.nereids.PLParser.Close_stmtContext;
 import org.apache.doris.nereids.PLParser.Declare_cursor_itemContext;
+import org.apache.doris.nereids.PLParser.Diag_exception_itemContext;
 import org.apache.doris.nereids.PLParser.Doris_statementContext;
 import org.apache.doris.nereids.PLParser.Exec_stmtContext;
 import org.apache.doris.nereids.PLParser.Exit_stmtContext;
+import org.apache.doris.nereids.PLParser.ExprContext;
 import org.apache.doris.nereids.PLParser.Fetch_stmtContext;
 import org.apache.doris.nereids.PLParser.For_cursor_stmtContext;
 import org.apache.doris.nereids.PLParser.For_range_stmtContext;
@@ -46,6 +48,7 @@ import org.apache.doris.nereids.PLParser.Print_stmtContext;
 import org.apache.doris.nereids.PLParser.QueryPrimaryDefaultContext;
 import org.apache.doris.nereids.PLParser.Quit_stmtContext;
 import org.apache.doris.nereids.PLParser.RegularQuerySpecificationContext;
+import org.apache.doris.nereids.PLParser.Repeat_stmtContext;
 import org.apache.doris.nereids.PLParser.Resignal_stmtContext;
 import org.apache.doris.nereids.PLParser.Return_stmtContext;
 import org.apache.doris.nereids.PLParser.Set_current_schema_optionContext;
@@ -56,9 +59,11 @@ import org.apache.doris.nereids.PLParser.Unconditional_loop_stmtContext;
 import org.apache.doris.nereids.PLParser.Values_into_stmtContext;
 import org.apache.doris.nereids.PLParser.While_stmtContext;
 import org.apache.doris.nereids.trees.plans.commands.info.FuncNameInfo;
-import org.apache.doris.plsql.Var.Type;
+import org.apache.doris.plsql.Signal.Type;
+import org.apache.doris.plsql.Var.VarType;
+import org.apache.doris.plsql.exception.ProcedureRuntimeException;
 import org.apache.doris.plsql.exception.QueryException;
-import org.apache.doris.plsql.exception.UndefinedIdentException;
+import org.apache.doris.plsql.exception.UndefinedFunctionException;
 import org.apache.doris.plsql.executor.Metadata;
 import org.apache.doris.plsql.executor.PlsqlResult;
 import org.apache.doris.plsql.executor.QueryExecutor;
@@ -67,6 +72,8 @@ import org.apache.doris.plsql.executor.ResultListener;
 import org.apache.doris.plsql.objects.Table;
 
 import org.antlr.v4.runtime.ParserRuleContext;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.sql.SQLException;
 import java.util.List;
@@ -78,6 +85,7 @@ import java.util.stream.IntStream;
  * PL/SQL statements execution
  */
 public class Stmt {
+    private static final Logger LOG = LogManager.getLogger(Stmt.class);
     Exec exec = null;
     Stack<Var> stack = null;
     Conf conf;
@@ -114,7 +122,6 @@ public class Stmt {
 
         QueryResult query = queryExecutor.executeQuery(exec.logicalPlanBuilder.getOriginSql(ctx), ctx);
         resultListener.setProcessor(query.processor());
-
         if (query.error()) {
             exec.signal(query);
             return 1;
@@ -138,7 +145,7 @@ public class Stmt {
                     }
                 } else {
                     exec.setSqlCode(SqlCodes.NO_DATA_FOUND);
-                    exec.signal(Signal.Type.NOTFOUND, "no rows into variables");
+                    exec.signal(Signal.Type.NOT_FOUND, "no rows into variables");
                 }
             } else if (ctx instanceof Doris_statementContext) { // only from visitStatement
                 // Print all results for standalone Statement.
@@ -172,20 +179,28 @@ public class Stmt {
                 trace(ctx, "Scalar subquery executed, first row and first column fetched only");
                 if (query.next()) {
                     exec.stackPush(new Var().setValue(query, 1));
-                    exec.setSqlSuccess();
+                    if (query.available()) {
+                        exec.setSqlSuccess();
+                    } else {
+                        exec.setSqlCode(SqlCodes.NO_DATA_FOUND);
+                        exec.setSqlState(SqlState.NOT_FOUND.getStateCode());
+                    }
                 } else {
                     evalNull();
                     exec.setSqlCode(SqlCodes.NO_DATA_FOUND);
+                    exec.signal(Signal.NOT_FOUND);
                 }
             }
+            exec.setRowCount(query.getRowCount());
         } catch (QueryException | AnalysisException e) {
             if (query.error()) {
                 exec.signal(query);
             } else {
                 exec.signal(e);
             }
-            query.close();
             return 1;
+        } finally {
+            query.close();
         }
         query.close();
         return 0;
@@ -246,17 +261,17 @@ public class Stmt {
         String intoName = getIntoVariable(ctx, columnIndex);
         Var var = exec.findVariable(intoName);
         if (var != null) {
-            if (var.type == Var.Type.PL_OBJECT && var.value instanceof Table) {
+            if (var.type == VarType.PL_OBJECT && var.value instanceof Table) {
                 Table table = (Table) var.value;
                 table.populate(query, getIntoTableIndex(ctx, columnIndex), columnIndex);
-            } else if (var.type == Var.Type.ROW) {
+            } else if (var.type == VarType.ROW) {
                 var.setRowValues(query);
             } else {
                 var.setValue(query, columnIndex);
             }
             exec.trace(ctx, var, query.metadata(), columnIndex);
         } else {
-            throw new UndefinedIdentException(ctx, intoName);
+            throw new UndefinedFunctionException(ctx, intoName);
         }
     }
 
@@ -271,16 +286,16 @@ public class Stmt {
             cur = exec.consumeReturnCursor(ctx.ident_pl(1).getText());
         } else if (ctx.RESULT() != null) {
             cur = exec.findVariable(ctx.ident_pl(1).getText());
-            if (cur != null && cur.type != Type.RS_LOCATOR) {
+            if (cur != null && cur.type != VarType.RS_LOCATOR) {
                 cur = null;
             }
         }
         if (cur == null) {
             trace(ctx, "Cursor for procedure not found: " + name);
-            exec.signal(Signal.Type.SQLEXCEPTION);
+            exec.signal(new ProcedureRuntimeException("Cursor for procedure not found: " + name));
             return -1;
         }
-        exec.addVariable(new Var(name, Type.CURSOR, cur.value));
+        exec.addVariable(new Var(name, VarType.CURSOR, cur.value));
         return 0;
     }
 
@@ -300,7 +315,7 @@ public class Stmt {
                 String name = ctx.ident_pl(i).getText();
                 Var loc = exec.findVariable(name);
                 if (loc == null) {
-                    loc = new Var(name, Type.RS_LOCATOR, cur.value);
+                    loc = new Var(name, VarType.RS_LOCATOR, cur.value);
                     exec.addVariable(loc);
                 } else {
                     loc.setValue(cur.value);
@@ -327,7 +342,7 @@ public class Stmt {
         if (ctx.cursor_with_return() != null) {
             cursor.setWithReturn(true);
         }
-        Var var = new Var(name, Type.CURSOR, cursor);
+        Var var = new Var(name, VarType.CURSOR, cursor);
         exec.addVariable(var);
         return 0;
     }
@@ -341,20 +356,26 @@ public class Stmt {
         Var var = null;
         String cursorName = ctx.ident_pl().getText();
         String sql = null;
-        if (ctx.FOR() != null) {                             // SELECT statement or dynamic SQL
-            sql = ctx.expr() != null ? exec.logicalPlanBuilder.getOriginSql(ctx.expr())
-                    : exec.logicalPlanBuilder.getOriginSql(ctx.query());
+        if (ctx.FOR() != null) {
+            // SELECT statement or dynamic SQL
+            if (ctx.expr() != null) {
+                ExprContext expr = ctx.expr();
+                sql = expr.ATSIGN() != null ? exec.findVariable(expr.ident_pl().getText()).toString():
+                        exec.logicalPlanBuilder.getOriginSql(ctx.expr());
+            } else {
+                sql = exec.logicalPlanBuilder.getOriginSql(ctx.query());
+            }
             cursor = new Cursor(sql);
             var = exec.findCursor(cursorName);                      // Can be a ref cursor variable
             if (var == null) {
-                var = new Var(cursorName, Type.CURSOR, cursor);
+                var = new Var(cursorName, VarType.CURSOR, cursor);
                 exec.addVariable(var);
             } else {
                 var.setValue(cursor);
             }
         } else {                                                 // Declared cursor
             var = exec.findVariable(cursorName);
-            if (var != null && var.type == Type.CURSOR) {
+            if (var != null && var.type == VarType.CURSOR) {
                 cursor = (Cursor) var.value;
                 if (cursor.getSqlExpr() != null) {
                     cursor.setSql(exec.logicalPlanBuilder.getOriginSql(cursor.getSqlExpr()));
@@ -381,7 +402,7 @@ public class Stmt {
         } else {
             trace(ctx, "Cursor not found: " + cursorName);
             exec.setSqlCode(SqlCodes.ERROR);
-            exec.signal(Signal.Type.SQLEXCEPTION);
+            exec.signal(new ProcedureRuntimeException("Cursor not found: " + cursorName));
             return 1;
         }
         return 0;
@@ -397,16 +418,16 @@ public class Stmt {
         if (varCursor == null) {
             trace(ctx, "Cursor not found: " + name);
             exec.setSqlCode(SqlCodes.ERROR);
-            exec.signal(Signal.Type.SQLEXCEPTION);
+            exec.signal(new ProcedureRuntimeException("Cursor not found: " + name));
             return 1;
         } else if (varCursor.value == null) {
             trace(ctx, "Cursor not open: " + name);
             exec.setSqlCode(SqlCodes.ERROR);
-            exec.signal(Signal.Type.SQLEXCEPTION);
+            exec.signal(new ProcedureRuntimeException("Cursor not found: " + name));
             return 1;
         } else if (exec.getOffline()) {
             exec.setSqlCode(SqlCodes.NO_DATA_FOUND);
-            exec.signal(Signal.Type.NOTFOUND, "fetch not found data");
+            exec.signal(Signal.Type.NOT_FOUND, "fetch not found data");
             return 0;
         }
         // Assign values from the row to local variables
@@ -437,7 +458,7 @@ public class Stmt {
                     for (int i = 0; i < cols; i++) {
                         Var var = exec.findVariable(ctx.ident_pl(i + 1).getText());
                         if (var != null) { // Variables must be defined in advance by DECLARE etc.
-                            if (var.type != Var.Type.ROW) {
+                            if (var.type != VarType.ROW) {
                                 var.setValue(queryResult, i); // Set value of each column into variable
                             } else {
                                 var.setRowValues(queryResult);
@@ -450,15 +471,16 @@ public class Stmt {
                         }
                     }
                     exec.incRowCount();
-                    exec.setSqlSuccess();
                 } else {
                     cursor.setFetch(false);
                     exec.setSqlCode(SqlCodes.NO_DATA_FOUND); // Check when exiting cursor
+                    exec.signal(Signal.NOT_FOUND);
                 }
             }
+            checkQueryResultAndSetSqlState(queryResult);
         } catch (QueryException | AnalysisException e) {
             exec.setSqlCode(e);
-            exec.signal(Signal.Type.SQLEXCEPTION, e.getMessage(), e);
+            exec.signal(Signal.Type.SQL_EXCEPTION, e.getMessage(), e);
         }
         return 0;
     }
@@ -475,7 +497,7 @@ public class Stmt {
         trace(ctx, "CLOSE");
         String name = ctx.IDENTIFIER().toString();
         Var var = exec.findVariable(name);
-        if (var != null && var.type == Type.CURSOR) {
+        if (var != null && var.type == VarType.CURSOR) {
             ((Cursor) var.value).close();
             exec.setSqlCode(SqlCodes.SUCCESS);
         } else if (trace) {
@@ -587,10 +609,10 @@ public class Stmt {
                     }
                 }
                 exec.incRowCount();
-                exec.setSqlSuccess();
+                checkQueryResultAndSetSqlState(query);
             } else {
                 exec.setSqlCode(SqlCodes.NO_DATA_FOUND);
-                exec.signal(Signal.Type.NOTFOUND, "assign from select not found data");
+                exec.signal(Signal.Type.NOT_FOUND, "assign from select not found data");
             }
         } catch (QueryException | AnalysisException e) {
             exec.signal(query);
@@ -601,17 +623,40 @@ public class Stmt {
         return 0;
     }
 
+    void checkQueryResultAndSetSqlState(QueryResult queryResult) {
+        exec.setRowCount(queryResult.getRowCount());
+        if (queryResult.available()) {
+            exec.setSqlSuccess();
+        } else {
+            exec.setSqlCode(SqlCodes.NO_DATA_FOUND);
+            exec.setSqlState(SqlState.NOT_FOUND.getStateCode());
+        }
+     }
     /**
      * GET DIAGNOSTICS EXCEPTION statement
      */
     public Integer getDiagnosticsException(Get_diag_stmt_exception_itemContext ctx) {
         trace(ctx, "GET DIAGNOSTICS EXCEPTION");
         Signal signal = exec.signalPeek();
-        if (signal == null || (signal != null && signal.type != Signal.Type.SQLEXCEPTION)) {
+        if (signal == null || (signal != null && signal.type != Signal.Type.SQL_EXCEPTION)) {
             signal = exec.currentSignal;
         }
-        if (signal != null) {
-            exec.setVariable(ctx.qident().getText(), signal.getValue());
+        if (signal == null) {
+            LOG.error("Get diagnostics requires an signal to raise.");
+            throw new ProcedureRuntimeException("Get diagnostics for exception/condition requires an exception to raise.");
+        }
+        if (!"1".equals(ctx.INTEGER_VALUE().getText().trim())) {
+            throw new ProcedureRuntimeException("Get diagnostics now only support condition 1.");
+        }
+        for (Diag_exception_itemContext itemCtx: ctx.diag_exception_item()) {
+            if (exec.findVariable(itemCtx.ident_pl().getText()) == null) {
+               exec.signal(new Signal(Type.SQL_EXCEPTION, "Variable '" + itemCtx.ident_pl().getText() + "' should be declared before used."));
+            }
+            if (itemCtx.ERRNO_SUFFIX() != null) {
+                exec.setVariable(itemCtx.ident_pl().getText(), exec.findVariable(Exec.SQLCODE));
+            } else if(itemCtx.MESSAGE_TEXT() != null) {
+                exec.setVariable(itemCtx.ident_pl().getText(), signal.getValue());
+            }
         }
         return 0;
     }
@@ -621,7 +666,7 @@ public class Stmt {
      */
     public Integer getDiagnosticsRowCount(Get_diag_stmt_rowcount_itemContext ctx) {
         trace(ctx, "GET DIAGNOSTICS ROW_COUNT");
-        exec.setVariable(ctx.qident().getText(), exec.getRowCount());
+        exec.setVariable(ctx.ident_pl().getText(), exec.getRowCount());
         return 0;
     }
 
@@ -665,18 +710,33 @@ public class Stmt {
     public Integer while_(While_stmtContext ctx) {
         trace(ctx, "WHILE - ENTERED");
         String label = exec.labelPop();
-        while (true) {
-            if (evalPop(ctx.bool_expr()).isTrue()) {
-                exec.enterScope(Scope.Type.LOOP);
-                visit(ctx.block());
-                exec.leaveScope();
-                if (canContinue(label)) {
-                    continue;
-                }
+        while (evalPop(ctx.bool_expr()).isTrue()) {
+            exec.enterScope(Scope.Type.LOOP);
+            visit(ctx.block());
+            exec.leaveScope();
+            if (!canContinue(label)) {
+                break;
             }
-            break;
         }
         trace(ctx, "WHILE - LEFT");
+        return 0;
+    }
+
+    /**
+     * Repeat statement
+     */
+    public Integer repeat(Repeat_stmtContext ctx) {
+        trace(ctx, "REPEAT - ENTERED");
+        String label = exec.labelPop();
+        do {
+            exec.enterScope(Scope.Type.LOOP);
+            visit(ctx.block());
+            exec.leaveScope();
+            if (!canContinue(label)) {
+                break;
+            }
+        } while (!evalPop(ctx.bool_expr()).isTrue());
+        trace(ctx, "REPEAT - LEFT");
         return 0;
     }
 
@@ -805,7 +865,7 @@ public class Stmt {
                     for (int i = 0; i < cols; i++) {
                         Var var = exec.findVariable(ctx.IDENTIFIER(i).getText());
                         if (var != null) {
-                            if (var.type != Type.ROW) {
+                            if (var.type != VarType.ROW) {
                                 var.setValue(query, i);
                             } else {
                                 var.setRowValues(query);
@@ -826,17 +886,18 @@ public class Stmt {
                         if (i > 1) {
                             console.print("\t");
                         }
-                        console.print(query.column(i, String.class));
+                        console.print(String.valueOf(query.column(i, Object.class)));
                     }
                     console.printLine("");
                 }
             }
+            exec.setRowCount(query.getRowCount());
         } catch (QueryException | AnalysisException e) {
-            exec.signal(query);
-            query.close();
+            exec.signal(e);
             return 1;
+        } finally {
+            query.close();
         }
-        query.close();
         return 0;
     }
 
@@ -933,7 +994,7 @@ public class Stmt {
      */
     public Integer signal(Signal_stmtContext ctx) {
         trace(ctx, "SIGNAL");
-        Signal signal = new Signal(Signal.Type.USERDEFINED, ctx.ident_pl().getText());
+        Signal signal = new Signal(Signal.Type.USER_DEFINED, ctx.ident_pl().getText());
         exec.signal(signal);
         return 0;
     }
@@ -950,7 +1011,7 @@ public class Stmt {
                 text = evalPop(ctx.expr(1)).toString();
             }
             SQLException exception = new SQLException(text, sqlstate, -1);
-            Signal signal = new Signal(Signal.Type.SQLEXCEPTION, text, exception);
+            Signal signal = new Signal(Signal.Type.SQL_EXCEPTION, text, exception);
             exec.setSqlCode(exception);
             exec.resignal(signal);
         } else {
@@ -976,7 +1037,7 @@ public class Stmt {
      */
     boolean canContinue(String label) {
         Signal signal = exec.signalPeek();
-        if (signal != null && signal.type == Signal.Type.SQLEXCEPTION) {
+        if (signal != null && signal.type != Type.LEAVE_LOOP) {
             return false;
         }
         signal = exec.signalPeek();
@@ -1012,7 +1073,7 @@ public class Stmt {
      * Evaluate the expression to NULL
      */
     void evalNull() {
-        exec.stackPush(Var.Null);
+        exec.stackPush(Var.NULL);
     }
 
     /**
@@ -1023,7 +1084,7 @@ public class Stmt {
         if (!exec.stack.isEmpty()) {
             return exec.stackPop();
         }
-        return Var.Empty;
+        return Var.EMPTY;
     }
 
     Var evalPop(ParserRuleContext ctx, long def) {

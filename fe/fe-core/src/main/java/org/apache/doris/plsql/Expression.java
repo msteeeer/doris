@@ -29,12 +29,15 @@ import org.apache.doris.nereids.PLParser.Expr_case_searchedContext;
 import org.apache.doris.nereids.PLParser.Expr_case_simpleContext;
 import org.apache.doris.nereids.PLParser.Expr_concatContext;
 import org.apache.doris.nereids.PLParser.Expr_cursor_attributeContext;
-import org.apache.doris.plsql.Var.Type;
+import org.apache.doris.nereids.trees.expressions.literal.Literal;
+import org.apache.doris.plsql.Var.VarType;
 import org.apache.doris.plsql.exception.PlValidationException;
+import org.apache.doris.plsql.exception.ProcedureRuntimeException;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 
 import java.math.BigDecimal;
+import java.math.MathContext;
 import java.sql.Date;
 import java.sql.Timestamp;
 import java.util.Calendar;
@@ -86,16 +89,14 @@ public class Expression {
             return;
         }
         Var result = evalPop(ctx.bool_expr(0));
-        if (ctx.LEFT_PAREN() != null) {
-            if (ctx.NOT() != null) {
-                result.negate();
-            }
+        if (ctx.NOT() != null) {
+            result = notOperator(result);
         } else if (ctx.bool_expr_logical_operator() != null) {
             if (ctx.bool_expr_logical_operator().AND() != null) {
                 if (result.isTrue()) {
                     result = evalPop(ctx.bool_expr(1));
                 }
-            } else if (ctx.bool_expr_logical_operator().OR() != null) {
+            } else if (ctx.bool_expr_logical_operator().OR() != null || ctx.bool_expr_logical_operator().DOUBLEPIPES() != null) {
                 if (!result.isTrue()) {
                     result = evalPop(ctx.bool_expr(1));
                 }
@@ -104,21 +105,26 @@ public class Expression {
         exec.stackPush(result);
     }
 
+    public Var notOperator(Var var) {
+        Var result = new Var(false);
+        switch (var.type) {
+            case BOOL:
+                result.setValue(!(Boolean) var.value);
+                break;
+            case BIGINT:
+                result.setValue((long)var.value == 0);
+                break;
+            default:
+                throw new IllegalArgumentException("`Not` apply to " + var.type + " is not supported.");
+        }
+        return result;
+    }
     /**
      * Binary boolean expression
      */
     public Integer execBoolBinary(Bool_expr_binaryContext ctx) {
         Bool_expr_binary_operatorContext op = ctx.bool_expr_binary_operator();
-        if (op.EQ() != null) {
-            operatorEqual(ctx, true);
-        } else if (op.NEQ() != null) {
-            operatorEqual(ctx, false);
-        } else if (op.GT() != null || op.LT() != null || op.GTE() != null
-                || op.LTE() != null) {
-            operatorCompare(ctx, op);
-        } else {
-            exec.stackPush(false);
-        }
+        operatorCompare(ctx, op);
         return 0;
     }
 
@@ -153,7 +159,7 @@ public class Expression {
      */
     public void execCursorAttribute(Expr_cursor_attributeContext ctx) {
         String name = ctx.ident_pl().getText();
-        Var val = new Var(Var.Type.BOOL);
+        Var val = new Var(VarType.BOOL);
         Var cursorVar = exec.findCursor(name);
         if (cursorVar != null) {
             Cursor cursor = (Cursor) cursorVar.value;
@@ -169,7 +175,7 @@ public class Expression {
             exec.stackPush(val);
         } else {
             trace(ctx, "Cursor not found: " + name);
-            exec.signal(Signal.Type.SQLEXCEPTION);
+            exec.signal(new ProcedureRuntimeException("Cursor not found: " + name));
         }
     }
 
@@ -177,37 +183,37 @@ public class Expression {
      * Addition operator
      */
     public void operatorAdd(ExprContext ctx) {
-        Var v1 = evalPop(ctx.expr(0));
-        Var v2 = evalPop(ctx.expr(1));
+        Var v1 = unBoxedLiteral(evalPop(ctx.expr(0)));
+        Var v2 = unBoxedLiteral(evalPop(ctx.expr(1)));
         if (v1.value == null || v2.value == null) {
             evalNull();
-        } else if (v1.type == Type.BIGINT && v2.type == Type.BIGINT) {
-            exec.stackPush(new Var((long) v1.value + (long) v2.value));
-        } else if (v1.type == Type.BIGINT && v2.type == Type.DECIMAL) {
-            exec.stackPush(new Var((new BigDecimal((long) v1.value)).add((BigDecimal) v2.value)));
-        } else if (v1.type == Type.BIGINT && v2.type == Type.DOUBLE) {
-            exec.stackPush(new Var((long) v1.value + (double) v2.value));
-        } else if (v1.type == Type.DECIMAL && v2.type == Type.DECIMAL) {
+        } else if (v1.type == VarType.BIGINT && v2.type == VarType.BIGINT) {
+            exec.stackPush(new Var(v1.longValue() + v2.longValue()));
+        } else if (v1.type == VarType.BIGINT && v2.type == VarType.DECIMAL) {
+            exec.stackPush(new Var((new BigDecimal(v1.longValue())).add((BigDecimal) v2.value)));
+        } else if (v1.type == VarType.BIGINT && v2.type == VarType.DOUBLE) {
+            exec.stackPush(new Var(v1.longValue() + v2.doubleValue()));
+        } else if (v1.type == VarType.DECIMAL && v2.type == VarType.DECIMAL) {
             exec.stackPush(new Var(((BigDecimal) v1.value).add((BigDecimal) v2.value)));
-        } else if (v1.type == Type.DECIMAL && v2.type == Type.BIGINT) {
-            exec.stackPush(new Var(((BigDecimal) v1.value).add(new BigDecimal((long) v2.value))));
-        } else if (v1.type == Type.DECIMAL && v2.type == Type.DOUBLE) {
-            exec.stackPush(new Var(((BigDecimal) v1.value).add(new BigDecimal((double) v2.value))));
-        } else if (v1.type == Type.DOUBLE && v2.type == Type.DOUBLE) {
-            exec.stackPush(new Var((double) v1.value + (double) v2.value));
-        } else if (v1.type == Type.DOUBLE && v2.type == Type.DECIMAL) {
-            exec.stackPush(new Var((new BigDecimal((double) v1.value)).add((BigDecimal) v2.value)));
-        } else if (v1.type == Type.DOUBLE && v2.type == Type.BIGINT) {
-            exec.stackPush(new Var(((double) v1.value) + (long) v2.value));
-        } else if (v1.type == Type.BIGINT && v2.type == Type.DATE) {
-            exec.stackPush(changeDateByInt((Date) v2.value, (long) v1.value, true /*add*/));
-        } else if (v1.type == Type.DATE && v2.type == Type.BIGINT) {
-            exec.stackPush(changeDateByInt((Date) v1.value, (long) v2.value, true /*add*/));
-        } else if (v1.type == Type.STRING && v2.type == Type.STRING) {
+        } else if (v1.type == VarType.DECIMAL && v2.type == VarType.BIGINT) {
+            exec.stackPush(new Var(((BigDecimal) v1.value).add(new BigDecimal(v2.longValue()))));
+        } else if (v1.type == VarType.DECIMAL && v2.type == VarType.DOUBLE) {
+            exec.stackPush(new Var(((BigDecimal) v1.value).add(new BigDecimal(v2.doubleValue()))));
+        } else if (v1.type == VarType.DOUBLE && v2.type == VarType.DOUBLE) {
+            exec.stackPush(new Var(v1.doubleValue() + v2.doubleValue()));
+        } else if (v1.type == VarType.DOUBLE && v2.type == VarType.DECIMAL) {
+            exec.stackPush(new Var((new BigDecimal(v1.doubleValue())).add((BigDecimal) v2.value)));
+        } else if (v1.type == VarType.DOUBLE && v2.type == VarType.BIGINT) {
+            exec.stackPush(new Var(v1.doubleValue() + v2.longValue()));
+        } else if (v1.type == VarType.BIGINT && v2.type == VarType.DATE) {
+            exec.stackPush(changeDateByInt((Date) v2.value, v1.longValue(), true /*add*/));
+        } else if (v1.type == VarType.DATE && v2.type == VarType.BIGINT) {
+            exec.stackPush(changeDateByInt((Date) v1.value, v2.longValue(), true /*add*/));
+        } else if (v1.type == VarType.STRING && v2.type == VarType.STRING) {
             exec.stackPush(((String) v1.value) + ((String) v2.value));
-        } else if (v1.type == Type.DATE && v2.type == Type.INTERVAL) {
+        } else if (v1.type == VarType.DATE && v2.type == VarType.INTERVAL) {
             exec.stackPush(new Var(((Interval) v2.value).dateChange((Date) v1.value, true /*add*/)));
-        } else if (v1.type == Type.TIMESTAMP && v2.type == Type.INTERVAL) {
+        } else if (v1.type == VarType.TIMESTAMP && v2.type == VarType.INTERVAL) {
             exec.stackPush(
                     new Var(((Interval) v2.value).timestampChange((Timestamp) v1.value, true /*add*/), v1.scale));
         } else {
@@ -219,33 +225,33 @@ public class Expression {
      * Subtraction operator
      */
     public void operatorSub(ExprContext ctx) {
-        Var v1 = evalPop(ctx.expr(0));
-        Var v2 = evalPop(ctx.expr(1));
+        Var v1 = unBoxedLiteral(evalPop(ctx.expr(0)));
+        Var v2 = unBoxedLiteral(evalPop(ctx.expr(1)));
         if (v1.value == null || v2.value == null) {
             evalNull();
-        } else if (v1.type == Type.BIGINT && v2.type == Type.BIGINT) {
-            exec.stackPush(new Var((long) v1.value - (long) v2.value));
-        } else if (v1.type == Type.BIGINT && v2.type == Type.DECIMAL) {
-            exec.stackPush(new Var((new BigDecimal((long) v1.value)).subtract((BigDecimal) v2.value)));
-        } else if (v1.type == Type.BIGINT && v2.type == Type.DOUBLE) {
-            exec.stackPush(new Var((long) v1.value - (double) v2.value));
-        } else if (v1.type == Type.DECIMAL && v2.type == Type.DECIMAL) {
+        } else if (v1.type == VarType.BIGINT && v2.type == VarType.BIGINT) {
+            exec.stackPush(new Var(v1.longValue() - v2.longValue()));
+        } else if (v1.type == VarType.BIGINT && v2.type == VarType.DECIMAL) {
+            exec.stackPush(new Var((new BigDecimal(v1.longValue())).subtract((BigDecimal) v2.value)));
+        } else if (v1.type == VarType.BIGINT && v2.type == VarType.DOUBLE) {
+            exec.stackPush(new Var(v1.longValue() - v2.doubleValue()));
+        } else if (v1.type == VarType.DECIMAL && v2.type == VarType.DECIMAL) {
             exec.stackPush(new Var(((BigDecimal) v1.value).subtract((BigDecimal) v2.value)));
-        } else if (v1.type == Type.DECIMAL && v2.type == Type.BIGINT) {
-            exec.stackPush(new Var(((BigDecimal) v1.value).subtract(new BigDecimal((long) v2.value))));
-        } else if (v1.type == Type.DECIMAL && v2.type == Type.DOUBLE) {
-            exec.stackPush(new Var(((BigDecimal) v1.value).subtract(new BigDecimal((double) v2.value))));
-        } else if (v1.type == Type.DOUBLE && v2.type == Type.DOUBLE) {
-            exec.stackPush(new Var((double) v1.value - (double) v2.value));
-        } else if (v1.type == Type.DOUBLE && v2.type == Type.DECIMAL) {
-            exec.stackPush(new Var((new BigDecimal((double) v1.value)).subtract((BigDecimal) v2.value)));
-        } else if (v1.type == Type.DOUBLE && v2.type == Type.BIGINT) {
-            exec.stackPush(new Var(((double) v1.value) - (long) v2.value));
-        } else if (v1.type == Type.DATE && v2.type == Type.BIGINT) {
-            exec.stackPush(changeDateByInt((Date) v1.value, (long) v2.value, false /*subtract*/));
-        } else if (v1.type == Type.DATE && v2.type == Type.INTERVAL) {
+        } else if (v1.type == VarType.DECIMAL && v2.type == VarType.BIGINT) {
+            exec.stackPush(new Var(((BigDecimal) v1.value).subtract(new BigDecimal(v2.longValue()))));
+        } else if (v1.type == VarType.DECIMAL && v2.type == VarType.DOUBLE) {
+            exec.stackPush(new Var(((BigDecimal) v1.value).subtract(new BigDecimal(v2.doubleValue()))));
+        } else if (v1.type == VarType.DOUBLE && v2.type == VarType.DOUBLE) {
+            exec.stackPush(new Var(v1.doubleValue() - v2.doubleValue()));
+        } else if (v1.type == VarType.DOUBLE && v2.type == VarType.DECIMAL) {
+            exec.stackPush(new Var((new BigDecimal(v1.doubleValue()).subtract((BigDecimal) v2.value))));
+        } else if (v1.type == VarType.DOUBLE && v2.type == VarType.BIGINT) {
+            exec.stackPush(new Var(v1.doubleValue() - v2.longValue()));
+        } else if (v1.type == VarType.DATE && v2.type == VarType.BIGINT) {
+            exec.stackPush(changeDateByInt((Date) v1.value, v2.longValue(), false /*subtract*/));
+        } else if (v1.type == VarType.DATE && v2.type == VarType.INTERVAL) {
             exec.stackPush(new Var(((Interval) v2.value).dateChange((Date) v1.value, false /*subtract*/)));
-        } else if (v1.type == Type.TIMESTAMP && v2.type == Type.INTERVAL) {
+        } else if (v1.type == VarType.TIMESTAMP && v2.type == VarType.INTERVAL) {
             exec.stackPush(
                     new Var(((Interval) v2.value).timestampChange((Timestamp) v1.value, false /*subtract*/), v1.scale));
         } else {
@@ -257,28 +263,28 @@ public class Expression {
      * Multiplication operator
      */
     public void operatorMultiply(ExprContext ctx) {
-        Var v1 = evalPop(ctx.expr(0));
-        Var v2 = evalPop(ctx.expr(1));
+        Var v1 = unBoxedLiteral(evalPop(ctx.expr(0)));
+        Var v2 = unBoxedLiteral(evalPop(ctx.expr(1)));
         if (v1.value == null || v2.value == null) {
             evalNull();
-        } else if (v1.type == Type.BIGINT && v2.type == Type.BIGINT) {
-            exec.stackPush(new Var((long) v1.value * (long) v2.value));
-        } else if (v1.type == Type.BIGINT && v2.type == Type.DECIMAL) {
-            exec.stackPush(new Var((new BigDecimal((long) v1.value)).multiply((BigDecimal) v2.value)));
-        } else if (v1.type == Type.BIGINT && v2.type == Type.DOUBLE) {
-            exec.stackPush(new Var((long) v1.value * (double) v2.value));
-        } else if (v1.type == Type.DECIMAL && v2.type == Type.DECIMAL) {
+        } else if (v1.type == VarType.BIGINT && v2.type == VarType.BIGINT) {
+            exec.stackPush(new Var(v1.longValue() * v2.longValue()));
+        } else if (v1.type == VarType.BIGINT && v2.type == VarType.DECIMAL) {
+            exec.stackPush(new Var((new BigDecimal(v1.longValue())).multiply((BigDecimal) v2.value)));
+        } else if (v1.type == VarType.BIGINT && v2.type == VarType.DOUBLE) {
+            exec.stackPush(new Var(v1.longValue() * v2.doubleValue()));
+        } else if (v1.type == VarType.DECIMAL && v2.type == VarType.DECIMAL) {
             exec.stackPush(new Var(((BigDecimal) v1.value).multiply((BigDecimal) v2.value)));
-        } else if (v1.type == Type.DECIMAL && v2.type == Type.BIGINT) {
-            exec.stackPush(new Var(((BigDecimal) v1.value).multiply(new BigDecimal((long) v2.value))));
-        } else if (v1.type == Type.DECIMAL && v2.type == Type.DOUBLE) {
-            exec.stackPush(new Var(((BigDecimal) v1.value).multiply(new BigDecimal((double) v2.value))));
-        } else if (v1.type == Type.DOUBLE && v2.type == Type.DOUBLE) {
-            exec.stackPush(new Var((double) v1.value * (double) v2.value));
-        } else if (v1.type == Type.DOUBLE && v2.type == Type.DECIMAL) {
-            exec.stackPush(new Var((new BigDecimal((double) v1.value)).multiply((BigDecimal) v2.value)));
-        } else if (v1.type == Type.DOUBLE && v2.type == Type.BIGINT) {
-            exec.stackPush(new Var(((double) v1.value) * (long) v2.value));
+        } else if (v1.type == VarType.DECIMAL && v2.type == VarType.BIGINT) {
+            exec.stackPush(new Var(((BigDecimal) v1.value).multiply(new BigDecimal(v2.longValue()))));
+        } else if (v1.type == VarType.DECIMAL && v2.type == VarType.DOUBLE) {
+            exec.stackPush(new Var(((BigDecimal) v1.value).multiply(new BigDecimal(v2.doubleValue()))));
+        } else if (v1.type == VarType.DOUBLE && v2.type == VarType.DOUBLE) {
+            exec.stackPush(new Var(v1.doubleValue() * v2.doubleValue()));
+        } else if (v1.type == VarType.DOUBLE && v2.type == VarType.DECIMAL) {
+            exec.stackPush(new Var((new BigDecimal(v1.doubleValue())).multiply((BigDecimal) v2.value)));
+        } else if (v1.type == VarType.DOUBLE && v2.type == VarType.BIGINT) {
+            exec.stackPush(new Var(v1.doubleValue() * v2.longValue()));
         } else {
             unsupported(ctx, v1, v2, "*");
         }
@@ -288,33 +294,41 @@ public class Expression {
      * Division operator
      */
     public void operatorDiv(ExprContext ctx) {
-        Var v1 = evalPop(ctx.expr(0));
-        Var v2 = evalPop(ctx.expr(1));
+        Var v1 = unBoxedLiteral(evalPop(ctx.expr(0)));
+        Var v2 = unBoxedLiteral(evalPop(ctx.expr(1)));
         if (v1.value == null || v2.value == null) {
             evalNull();
-        } else if (v1.type == Type.BIGINT && v2.type == Type.BIGINT) {
-            exec.stackPush(new Var((long) v1.value / (long) v2.value));
-        } else if (v1.type == Type.BIGINT && v2.type == Type.DECIMAL) {
-            exec.stackPush(new Var((new BigDecimal((long) v1.value)).divide((BigDecimal) v2.value)));
-        } else if (v1.type == Type.BIGINT && v2.type == Type.DOUBLE) {
-            exec.stackPush(new Var((long) v1.value / (double) v2.value));
-        } else if (v1.type == Type.DECIMAL && v2.type == Type.DECIMAL) {
-            exec.stackPush(new Var(((BigDecimal) v1.value).divide((BigDecimal) v2.value)));
-        } else if (v1.type == Type.DECIMAL && v2.type == Type.BIGINT) {
-            exec.stackPush(new Var(((BigDecimal) v1.value).divide(new BigDecimal((long) v2.value))));
-        } else if (v1.type == Type.DECIMAL && v2.type == Type.DOUBLE) {
-            exec.stackPush(new Var(((BigDecimal) v1.value).divide(new BigDecimal((double) v2.value))));
-        } else if (v1.type == Type.DOUBLE && v2.type == Type.DOUBLE) {
-            exec.stackPush(new Var((double) v1.value / (double) v2.value));
-        } else if (v1.type == Type.DOUBLE && v2.type == Type.DECIMAL) {
-            exec.stackPush(new Var((new BigDecimal((double) v1.value)).divide((BigDecimal) v2.value)));
-        } else if (v1.type == Type.DOUBLE && v2.type == Type.BIGINT) {
-            exec.stackPush(new Var(((double) v1.value) / (long) v2.value));
+        } else if (v1.type == VarType.BIGINT && v2.type == VarType.BIGINT) {
+            exec.stackPush(new Var(v1.longValue() / v2.longValue()));
+        } else if (v1.type == VarType.BIGINT && v2.type == VarType.DECIMAL) {
+            exec.stackPush(new Var((new BigDecimal(v1.longValue())).divide((BigDecimal) v2.value)));
+        } else if (v1.type == VarType.BIGINT && v2.type == VarType.DOUBLE) {
+            exec.stackPush(new Var(v1.longValue() / v2.doubleValue()));
+        } else if (v1.type == VarType.DECIMAL && v2.type == VarType.DECIMAL) {
+            exec.stackPush(new Var(((BigDecimal) v1.value).divide((BigDecimal) v2.value, MathContext.DECIMAL128)));
+        } else if (v1.type == VarType.DECIMAL && v2.type == VarType.BIGINT) {
+            exec.stackPush(new Var(((BigDecimal) v1.value).divide(new BigDecimal(v2.longValue(), MathContext.DECIMAL128))));
+        } else if (v1.type == VarType.DECIMAL && v2.type == VarType.DOUBLE) {
+            exec.stackPush(new Var(((BigDecimal) v1.value).divide(new BigDecimal(v2.doubleValue()), MathContext.DECIMAL128)));
+        } else if (v1.type == VarType.DOUBLE && v2.type == VarType.DOUBLE) {
+            exec.stackPush(new Var(v1.doubleValue() / v2.doubleValue()));
+        } else if (v1.type == VarType.DOUBLE && v2.type == VarType.DECIMAL) {
+            exec.stackPush(new Var((new BigDecimal(v1.doubleValue())).divide((BigDecimal) v2.value, MathContext.DECIMAL128)));
+        } else if (v1.type == VarType.DOUBLE && v2.type == VarType.BIGINT) {
+            exec.stackPush(new Var((v1.doubleValue()) / v2.longValue()));
         } else {
             unsupported(ctx, v1, v2, "/");
         }
     }
 
+    Var unBoxedLiteral(Var var) {
+        if (var != null && var.value instanceof Literal) {
+           Var unBoxedVar = new Var(var);
+           unBoxedVar.setValue(((Literal) var.value).getValue());
+           return unBoxedVar;
+        }
+        return var;
+    }
     private void unsupported(ExprContext ctx, Var op1, Var op2, String operator) {
         String msg = String.format("Unsupported data types in '%s' operator (%s%s%s)", operator, op1.type, operator,
                 op2.type);
@@ -339,46 +353,22 @@ public class Expression {
     }
 
     /**
-     * Equality operator
-     */
-    public void operatorEqual(Bool_expr_binaryContext ctx, boolean equal) {
-        Var v1 = evalPop(ctx.expr(0));
-        Var v2 = evalPop(ctx.expr(1));
-        boolean eq = v1.equals(v2);
-        if (!equal) {
-            eq = !eq;
-        }
-        exec.stackPush(eq);
-    }
-
-    /**
      * Comparison operator
      */
     public void operatorCompare(Bool_expr_binaryContext ctx,
             Bool_expr_binary_operatorContext op) {
-        Var v1 = evalPop(ctx.expr(0));
-        Var v2 = evalPop(ctx.expr(1));
+        Var v1 = unBoxedLiteral(evalPop(ctx.expr(0)));
+        Var v2 = unBoxedLiteral(evalPop(ctx.expr(1)));
+        if (v1 == null || v2 == null || v1.isNull() || v2.isNull()) {
+           exec.stackPush(false);
+           return;
+        }
+        // TODO: support LIKE | RLIKE | REGEXP
         int cmp = v1.compareTo(v2);
-        boolean bool = false;
-        if (op.GT() != null) {
-            if (cmp > 0) {
-                bool = true;
-            }
-        } else if (op.GTE() != null) {
-            if (cmp >= 0) {
-                bool = true;
-            }
-        }
-        if (op.LT() != null) {
-            if (cmp < 0) {
-                bool = true;
-            }
-        } else if (op.LTE() != null) {
-            if (cmp <= 0) {
-                bool = true;
-            }
-        }
-        exec.stackPush(bool);
+        boolean res = cmp == 0 && (op.LTE() != null || op.GTE() != null || op.EQ() != null);
+        res |= cmp > 0 && (op.GT() != null || op.GTE() != null || op.NEQ() != null);
+        res |= cmp < 0 && (op.LT() != null || op.LTE() != null || op.NEQ() != null);
+        exec.stackPush(res);
     }
 
     /**
@@ -534,7 +524,7 @@ public class Expression {
         if (!exec.stack.isEmpty()) {
             return exec.stackPop();
         }
-        return Var.Empty;
+        return Var.EMPTY;
     }
 
     /**
@@ -552,7 +542,7 @@ public class Expression {
      * Evaluate the expression to NULL
      */
     void evalNull() {
-        exec.stackPush(Var.Null);
+        exec.stackPush(Var.NULL);
     }
 
     /**

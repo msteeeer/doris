@@ -15,29 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 // This file is copied from
-// https://github.com/apache/hive/blob/master/hplsql/src/main/java/org/apache/hive/hplsql/executor/RowResult.java
+// https://github.com/apache/hive/blob/master/hplsql/src/main/java/org/apache/hive/hplsql/UndefinedIdentException.java
 // and modified by Doris
 
-package org.apache.doris.plsql.executor;
+package org.apache.doris.plsql.exception;
 
-import org.apache.doris.common.AnalysisException;
-import org.apache.doris.nereids.trees.expressions.literal.Literal;
+import org.antlr.v4.runtime.ParserRuleContext;
 
-import java.nio.ByteBuffer;
-
-public interface RowResult {
-    void ready();
-
-    boolean isQuery();
-    boolean available();
-    boolean next();
-    long getRowCount();
-    void close();
-
-    <T> T get(int columnIndex, Class<T> type) throws AnalysisException;
-
-    Literal get(int columnIndex) throws AnalysisException;
-
-    ByteBuffer getMysqlRow();
-
+public class UndefinedFunctionException extends PlValidationException {
+    public UndefinedFunctionException(ParserRuleContext ctx, String ident) {
+        super(ctx, "PL/SQL function or procedure '" + ident + "' must be created before they can be called.");
+    }
 }

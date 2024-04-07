@@ -24,6 +24,7 @@ import org.apache.doris.nereids.PLParser.Expr_func_paramsContext;
 import org.apache.doris.nereids.PLParser.Expr_spec_funcContext;
 import org.apache.doris.plsql.Exec;
 import org.apache.doris.plsql.Var;
+import org.apache.doris.plsql.Var.VarType;
 import org.apache.doris.plsql.executor.QueryExecutor;
 
 import org.apache.commons.lang3.StringUtils;
@@ -72,7 +73,7 @@ public class FunctionDatetime extends BuiltinFunctions {
     public static Var currentDate() {
         SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd");
         String s = f.format(Calendar.getInstance().getTime());
-        return new Var(org.apache.doris.plsql.Var.Type.DATE,
+        return new Var(VarType.DATE,
                 org.apache.doris.plsql.Utils.toDate(s));
     }
 
@@ -124,7 +125,7 @@ public class FunctionDatetime extends BuiltinFunctions {
             evalNull();
             return;
         }
-        Var var = new Var(org.apache.doris.plsql.Var.Type.DATE);
+        Var var = new Var(VarType.DATE);
         var.cast(evalPop(ctx.func_param(0).expr()));
         evalVar(var);
     }
@@ -148,7 +149,7 @@ public class FunctionDatetime extends BuiltinFunctions {
             evalNull();
             return;
         }
-        Var var = new Var(org.apache.doris.plsql.Var.Type.TIMESTAMP);
+        Var var = new Var(VarType.TIMESTAMP);
         var.cast(evalPop(ctx.func_param(0).expr()));
         evalVar(var);
     }
@@ -166,7 +167,7 @@ public class FunctionDatetime extends BuiltinFunctions {
         String format = org.apache.doris.plsql.Utils.convertSqlDatetimeFormat(sqlFormat);
         try {
             long timeInMs = new SimpleDateFormat(format).parse(value).getTime();
-            evalVar(new Var(org.apache.doris.plsql.Var.Type.TIMESTAMP, new Timestamp(timeInMs)));
+            evalVar(new Var(VarType.TIMESTAMP, new Timestamp(timeInMs)));
         } catch (Exception e) {
             exec.signal(e);
             evalNull();

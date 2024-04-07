@@ -148,6 +148,7 @@ import org.apache.doris.planner.OriginalPlanner;
 import org.apache.doris.planner.PlanNode;
 import org.apache.doris.planner.Planner;
 import org.apache.doris.planner.ScanNode;
+import org.apache.doris.plsql.exception.ProcedureRuntimeException;
 import org.apache.doris.proto.Data;
 import org.apache.doris.proto.InternalService;
 import org.apache.doris.proto.InternalService.PGroupCommitInsertResponse;
@@ -648,6 +649,9 @@ public class StmtExecutor {
                 context.getState().setError(e.getMysqlErrorCode(), e.getMessage());
                 throw new NereidsException("Command (" + originStmt.originStmt + ") process failed",
                         new AnalysisException(e.getMessage(), e));
+            } catch (ProcedureRuntimeException e) {
+                context.getState().setError(e.getMessage());
+                throw e;
             } catch (Exception e) {
                 // Maybe our bug
                 if (LOG.isDebugEnabled()) {

@@ -41,7 +41,6 @@ public class PLSqlLogicalPlanBuilder extends LogicalPlanBuilder {
                 .map(RuleContext::getText)
                 .collect(ImmutableList.toImmutableList());
     }
-
     @Override
     public Expression visitColumnReference(ColumnReferenceContext ctx) {
         Var var = ConnectContext.get().getProcedureExec().findVariable(ctx.getText());

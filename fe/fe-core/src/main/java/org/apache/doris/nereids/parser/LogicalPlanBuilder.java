@@ -216,6 +216,7 @@ import org.apache.doris.nereids.properties.SelectHintOrdered;
 import org.apache.doris.nereids.properties.SelectHintSetVar;
 import org.apache.doris.nereids.trees.TableSample;
 import org.apache.doris.nereids.trees.expressions.Add;
+import org.apache.doris.nereids.trees.expressions.Alias;
 import org.apache.doris.nereids.trees.expressions.And;
 import org.apache.doris.nereids.trees.expressions.BitAnd;
 import org.apache.doris.nereids.trees.expressions.BitNot;
@@ -432,6 +433,8 @@ import org.apache.doris.nereids.types.coercion.CharacterType;
 import org.apache.doris.nereids.util.ExpressionUtils;
 import org.apache.doris.nereids.util.RelationUtil;
 import org.apache.doris.nereids.util.Utils;
+import org.apache.doris.plsql.Exec;
+import org.apache.doris.plsql.Var;
 import org.apache.doris.policy.FilterType;
 import org.apache.doris.policy.PolicyTypeEnum;
 import org.apache.doris.qe.ConnectContext;
@@ -1401,6 +1404,19 @@ public class LogicalPlanBuilder extends DorisParserBaseVisitor<Object> {
 
     @Override
     public Expression visitUserVariable(UserVariableContext ctx) {
+        String VarName = ctx.identifierOrText().getText();
+        Var var;
+        Exec exec = ConnectContext.get().getProcedureExec();
+        if (exec != null) {
+            var = exec.findVariable(VarName);
+            if (var != null) {
+               return var.toLiteral();
+            }
+        }
+        var = ConnectContext.get().getPlsqlContext().getGlobalVariable(VarName);
+        if (var != null) {
+            return new Alias(var.toLiteral(), ctx.identifierOrText().getText());
+        }
         return new UnboundVariable(ctx.identifierOrText().getText(), VariableType.USER);
     }
 

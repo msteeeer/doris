@@ -30,7 +30,7 @@ program : block EOF;
 block : ((begin_end_block | stmt) GO?)+ ;               // Multiple consecutive blocks/statements
 
 begin_end_block :
-       declare_block? BEGIN block exception_block? block_end
+      BEGIN block exception_block? block_end
      ;
 
 single_block_stmt :                                      // Single BEGIN END block (but nested blocks are possible) or single statement
@@ -120,12 +120,15 @@ stmt :
      | signal_stmt
      | values_into_stmt
      | while_stmt
+     | repeat_stmt
      | unconditional_loop_stmt
      | label_stmt
      | host_pl
      | null_stmt
-     | expr_stmt
      | semicolon_stmt      // Placed here to allow null statements ;;...
+     | prepare_stmt
+     | drop_prepare_stmt
+     | commit_stmt
      ;
 
 semicolon_stmt :
@@ -162,8 +165,8 @@ assignment_stmt_item :
      ;
 
 assignment_stmt_single_item :
-       ident_pl COLON? EQ expr
-     | LEFT_PAREN ident_pl RIGHT_PAREN COLON? EQ expr
+       ATSIGN? ident_pl COLON? EQ expr
+     | LEFT_PAREN ATSIGN? ident_pl RIGHT_PAREN COLON? EQ expr
      ;
 
 assignment_stmt_collection_item :
@@ -171,11 +174,11 @@ assignment_stmt_collection_item :
     ;
 
 assignment_stmt_multiple_item :
-       LEFT_PAREN ident_pl (COMMA ident_pl)* RIGHT_PAREN COLON? EQ LEFT_PAREN expr (COMMA expr)* RIGHT_PAREN
+       LEFT_PAREN ATSIGN? ident_pl (COMMA ATSIGN? ident_pl)* RIGHT_PAREN COLON? EQ LEFT_PAREN expr (COMMA expr)* RIGHT_PAREN
      ;
 
 assignment_stmt_select_item :
-       (ident_pl | (LEFT_PAREN ident_pl (COMMA ident_pl)* RIGHT_PAREN)) COLON? EQ LEFT_PAREN query RIGHT_PAREN
+       (ATSIGN? ident_pl | (LEFT_PAREN ATSIGN? ident_pl (COMMA ATSIGN? ident_pl)* RIGHT_PAREN)) COLON? EQ LEFT_PAREN query RIGHT_PAREN
      ;
 
 allocate_cursor_stmt:
@@ -214,16 +217,17 @@ declare_stmt_item :
      ; // TODO declare_temporary_table_item
 
 declare_var_item :
-       ident_pl (COMMA ident_pl)* AS? dtype dtype_len? dtype_attr* dtype_default?
-     | ident_pl CONSTANT AS? dtype dtype_len? dtype_default
+       ATSIGN? ident_pl (COMMA ATSIGN? ident_pl)* AS? dtype dtype_len? dtype_attr* dtype_default?
+     | ATSIGN? ident_pl CONSTANT AS? dtype dtype_len? dtype_default
      ;
 
 declare_condition_item :    // Condition declaration
-       ident_pl CONDITION
+       ident_pl CONDITION FOR (INTEGER_VALUE | SQLSTATE STRING_LITERAL)
      ;
 
 declare_cursor_item :      // Cursor declaration
        (CURSOR ident_pl | ident_pl CURSOR) (cursor_with_return | cursor_without_return)? (IS | AS | FOR) (query | expr )
+       | ident_pl REF CURSOR
      ;
 
 cursor_with_return :
@@ -235,7 +239,7 @@ cursor_without_return :
      ;
 
 declare_handler_item :     // Condition handler declaration
-       (CONTINUE | EXIT) HANDLER FOR (SQLEXCEPTION | SQLWARNING | NOT FOUND | ident_pl) single_block_stmt
+       (CONTINUE | EXIT) HANDLER FOR (SQLEXCEPTION | SQLWARNING | NOT FOUND  | SQLSTATE STRING_LITERAL | INTEGER_VALUE | ident_pl) single_block_stmt
      ;
 
 dtype :                  // Data types
@@ -270,12 +274,15 @@ dtype :                  // Data types
      | SMALLDATETIME
      | STRING
      | SYS_REFCURSOR
+     | TEXT
      | TIMESTAMP
      | TINYINT
      | VARCHAR
      | VARCHAR2
      | XML
-     | qident ('%' (TYPE | ROWTYPE))?             // User-defined or derived data type
+     | BOOL
+     | BOOLEAN
+     | qident ('%' (TYPE | ROWTYPE))            // User-defined or derived data type
      ;
 
 dtype_len :             // Data type length or size specification
@@ -341,7 +348,7 @@ show_procedure_stmt:
 
 show_create_procedure_stmt:
       SHOW CREATE PROCEDURE name=multipartIdentifier
-    ;      
+    ;
 
 create_routine_params :
        LEFT_PAREN RIGHT_PAREN
@@ -415,11 +422,14 @@ get_diag_stmt_item :
      ;
 
 get_diag_stmt_exception_item :
-       EXCEPTION INTEGER_VALUE qident EQ MESSAGE_TEXT
+       (EXCEPTION |CONDITION) INTEGER_VALUE diag_exception_item (COMMA diag_exception_item)*
      ;
 
+diag_exception_item:
+    ATSIGN? ident_pl EQ (MESSAGE_TEXT | RETURNED_SQLSTATE | ERRNO_SUFFIX)
+;
 get_diag_stmt_rowcount_item :
-       qident EQ ROW_COUNT
+       ATSIGN? ident_pl EQ ROW_COUNT
      ;
 
 leave_stmt :
@@ -435,7 +445,7 @@ open_stmt :             // OPEN cursor statement
      ;
 
 fetch_stmt :            // FETCH cursor statement
-       FETCH FROM? ident_pl bulkCollectClause? INTO ident_pl (COMMA ident_pl)* fetch_limit?
+       FETCH FROM? ident_pl bulkCollectClause? INTO ATSIGN? ident_pl (COMMA ATSIGN? ident_pl)* fetch_limit?
      ;
 
 fetch_limit:
@@ -477,7 +487,7 @@ set_session_option :
      ;
 
 set_doris_session_option :
-       (GLOBAL | LOCAL | SESSION)? ident_pl EQ ident_pl
+       (GLOBAL | LOCAL | SESSION) ident_pl EQ ident_pl
       ;
 
 set_current_schema_option :
@@ -502,15 +512,19 @@ signal_stmt :          // SIGNAL statement
      ;
 
 values_into_stmt :     // VALUES INTO statement
-       VALUES LEFT_PAREN? expr (COMMA expr)* RIGHT_PAREN? INTO LEFT_PAREN? ident_pl (COMMA ident_pl)* RIGHT_PAREN?
+       VALUES LEFT_PAREN? expr (COMMA expr)* RIGHT_PAREN? INTO LEFT_PAREN? ATSIGN? ident_pl (COMMA ATSIGN? ident_pl)* RIGHT_PAREN?
      ;
 
 while_stmt :            // WHILE loop statement
-       WHILE bool_expr (DO | LOOP | THEN | BEGIN) block END (WHILE | LOOP)?
+    WHILE bool_expr (DO | LOOP | THEN | BEGIN) block END (WHILE | LOOP)? IDENTIFIER?
      ;
 
+repeat_stmt :
+    REPEAT block UNTIL bool_expr END REPEAT IDENTIFIER?
+    ;
+
 unconditional_loop_stmt : // LOOP .. END LOOP
-       LOOP block END LOOP
+       LOOP block END LOOP IDENTIFIER?
      ;
 
 for_cursor_stmt :       // FOR (cursor) statement
@@ -526,12 +540,22 @@ label_stmt :
      | LT LT IDENTIFIER GT GT
      ;
 
+commit_stmt :
+   COMMIT
+ ;
+prepare_stmt :
+    PREPARE ident_pl FROM ( ATSIGN? ident_pl | string)
+;
+drop_prepare_stmt :
+    (DROP | DEALLOCATE) PREPARE ATSIGN? ident_pl
+;
+
 using_clause :          // USING var,... clause
        USING expr (COMMA expr)*
      ;
 
 bool_expr :                               // Boolean condition
-       NOT? LEFT_PAREN bool_expr RIGHT_PAREN
+       (LOGICALNOT | NOT) bool_expr
      | bool_expr bool_expr_logical_operator bool_expr
      | bool_expr_atom
      ;
@@ -554,6 +578,7 @@ bool_expr_binary :
 bool_expr_logical_operator :
        AND
      | OR
+     | DOUBLEPIPES
      ;
 
 bool_expr_binary_operator :
@@ -581,8 +606,8 @@ expr :
      | expr_spec_func
      | expr_func
      | expr_atom
+     | ATSIGN? ident_pl
      ;
-
 expr_atom :
        date_literal
      | timestamp_literal
@@ -607,7 +632,7 @@ interval_item :
      ;
 
 expr_concat :                  // String concatenation operator
-       expr_concat_item (DOUBLEPIPES | CONCAT) expr_concat_item ((DOUBLEPIPES | CONCAT) expr_concat_item)*
+       expr_concat_item (DOUBLEPIPES) expr_concat_item ((DOUBLEPIPES) expr_concat_item)*
      ;
 
 expr_concat_item :
@@ -745,9 +770,8 @@ timestamp_literal :                       // TIMESTAMP 'YYYY-MM-DD HH:MI:SS.FFF'
      ;
 
 ident_pl :
-       '-'? (IDENTIFIER | non_reserved_words | nonReserved)
+       '-'?  (IDENTIFIER | non_reserved_words | nonReserved)
      ;
-
 qident :                                  // qualified identifier e.g: table_name.col_name or db_name._table_name
        ident_pl ('.'ident_pl)*
      ;
@@ -798,7 +822,6 @@ non_reserved_words :                      // Tokens that are not reserved words 
      | COLLECTION
      | COMPRESS
      | CONSTANT
-     | CONCAT
      | CONDITION
      | COUNT_BIG
      | CREATOR

@@ -15,29 +15,22 @@
 // specific language governing permissions and limitations
 // under the License.
 // This file is copied from
-// https://github.com/apache/hive/blob/master/hplsql/src/main/java/org/apache/hive/hplsql/executor/RowResult.java
+// https://github.com/apache/hive/blob/master/hplsql/src/main/java/org/apache/hive/hplsql/Exec.java
 // and modified by Doris
 
-package org.apache.doris.plsql.executor;
+package org.apache.doris.plsql;
 
-import org.apache.doris.common.AnalysisException;
-import org.apache.doris.nereids.trees.expressions.literal.Literal;
+import java.util.HashMap;
+import java.util.Map;
 
-import java.nio.ByteBuffer;
+public class PlsqlContext {
+    private Map<String, Var> procedureGlobalVariables = new HashMap<>();
 
-public interface RowResult {
-    void ready();
+    public void registerGlobalVariable(String name, Var var) {
+        this.procedureGlobalVariables.put(name.toUpperCase(), var);
+    }
 
-    boolean isQuery();
-    boolean available();
-    boolean next();
-    long getRowCount();
-    void close();
-
-    <T> T get(int columnIndex, Class<T> type) throws AnalysisException;
-
-    Literal get(int columnIndex) throws AnalysisException;
-
-    ByteBuffer getMysqlRow();
-
+    public Var getGlobalVariable(String name) {
+        return procedureGlobalVariables.get(name.toUpperCase());
+    }
 }
